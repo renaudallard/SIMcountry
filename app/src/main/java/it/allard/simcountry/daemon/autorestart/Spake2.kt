@@ -30,6 +30,8 @@
 package it.allard.simcountry.daemon.autorestart
 
 import java.math.BigInteger
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.security.SecureRandom
 
@@ -62,7 +64,8 @@ class Spake2(
     // so the cofactor is cleared *once* during scalar multiplication on the peer's
     // unblinded point. Match that exactly: the integer value here is 8 * (rand mod L).
     private val privateScalar: BigInteger = randomScalar(rng).multiply(COFACTOR)
-    private val passwordScalar: BigInteger = derivePasswordScalar(password)
+    private val passwordHashFull: ByteArray = MessageDigest.getInstance("SHA-512").digest(password)
+    private val passwordScalar: BigInteger = Ed25519Math.fromLittleEndian(passwordHashFull).mod(Ed25519Math.L)
     private val myPwPoint: Ed25519Math.Point = if (role == Role.CLIENT) M_POINT else N_POINT
     private val theirPwPoint: Ed25519Math.Point = if (role == Role.CLIENT) N_POINT else M_POINT
 
@@ -92,14 +95,29 @@ class Spake2(
         val k = Ed25519Math.scalarMult(privateScalar, unblinded)
         val kBytes = Ed25519Math.encode(k)
 
-        val aliceMsg = if (role == Role.CLIENT) outboundMessage else theirMessage
-        val bobMsg = if (role == Role.CLIENT) theirMessage else outboundMessage
+        // BoringSSL hashes a length-prefixed transcript whose order is
+        // always client-first: client name, server name, client msg, server msg,
+        // dh_shared, password_hash. The names are the NUL-terminated ASCII
+        // identifiers ("adb pair client\0" / "adb pair server\0"), each 16
+        // bytes long because adbd passes their C-array sizeof which includes
+        // the terminator.
+        val clientMsg = if (role == Role.CLIENT) outboundMessage else theirMessage
+        val serverMsg = if (role == Role.CLIENT) theirMessage else outboundMessage
 
         val sha = MessageDigest.getInstance("SHA-512")
-        sha.update(aliceMsg)
-        sha.update(bobMsg)
-        sha.update(kBytes)
+        appendLengthPrefixed(sha, CLIENT_NAME)
+        appendLengthPrefixed(sha, SERVER_NAME)
+        appendLengthPrefixed(sha, clientMsg)
+        appendLengthPrefixed(sha, serverMsg)
+        appendLengthPrefixed(sha, kBytes)
+        appendLengthPrefixed(sha, passwordHashFull)
         return sha.digest()
+    }
+
+    private fun appendLengthPrefixed(sha: MessageDigest, data: ByteArray) {
+        val prefix = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(data.size.toLong()).array()
+        sha.update(prefix)
+        sha.update(data)
     }
 
     companion object {
@@ -159,6 +177,11 @@ class Spake2(
 
         private val COFACTOR: BigInteger = BigInteger.valueOf(8)
 
+        // adbd's PairingAuthCtx passes these names to SPAKE2_CTX_new with
+        // a C `sizeof()` that includes the trailing NUL; match that.
+        private val CLIENT_NAME: ByteArray = "adb pair client\u0000".toByteArray(Charsets.US_ASCII)
+        private val SERVER_NAME: ByteArray = "adb pair server\u0000".toByteArray(Charsets.US_ASCII)
+
         private val M_POINT: Ed25519Math.Point = affinePoint(M_X_LE, M_Y_LE)
         private val N_POINT: Ed25519Math.Point = affinePoint(N_X_LE, N_Y_LE)
 
@@ -166,11 +189,6 @@ class Spake2(
             val x = Ed25519Math.fromLittleEndian(xLe)
             val y = Ed25519Math.fromLittleEndian(yLe)
             return Ed25519Math.Point(x, y, BigInteger.ONE, x.multiply(y).mod(Ed25519Math.P))
-        }
-
-        private fun derivePasswordScalar(password: ByteArray): BigInteger {
-            val digest = MessageDigest.getInstance("SHA-512").digest(password)
-            return Ed25519Math.fromLittleEndian(digest).mod(Ed25519Math.L)
         }
 
         private fun randomScalar(rng: SecureRandom): BigInteger {
