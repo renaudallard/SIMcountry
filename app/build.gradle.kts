@@ -82,6 +82,7 @@ android {
             excludes += setOf(
                 "/META-INF/{AL2.0,LGPL2.1}",
                 "/META-INF/DEPENDENCIES",
+                "/META-INF/versions/**/OSGI-INF/MANIFEST.MF",
             )
         }
     }
@@ -101,6 +102,8 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.bouncycastle.bcprov)
+    implementation(libs.bouncycastle.bcpkix)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 
