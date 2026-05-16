@@ -196,3 +196,11 @@ Unit tests cover the rule matcher (8 cases including specificity scoring)
 and country-watcher state machine. The full switching flow has not yet
 been validated on physical hardware; manual device testing on a Pixel
 running Android 13+ is mandatory before any release.
+
+---
+
+## Support this project
+
+If you find SIMcountry useful, you can support development:
+
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-blue.svg?logo=paypal)](https://www.paypal.me/RenaudAllard)
