@@ -71,12 +71,14 @@ class SimRegistry(
     private val _live = MutableStateFlow<List<SubInfo>>(emptyList())
 
     val subs: StateFlow<List<RegisteredSub>> = combine(_persisted, _live) { persisted, live ->
-        val byIccid = persisted.associateBy { it.iccid }.toMutableMap()
-        for (s in live) {
+        val keyedPersisted = persisted.filter { it.iccid.isNotBlank() }
+        val keyedLive = live.filter { it.iccid.isNotBlank() }
+        val byIccid = keyedPersisted.associateBy { it.iccid }.toMutableMap()
+        for (s in keyedLive) {
             val nick = byIccid[s.iccid]?.nickname
             byIccid[s.iccid] = Persisted(s.iccid, s.displayName, s.carrierName, s.isEmbedded, nick)
         }
-        val ids = live.associateBy { it.iccid }
+        val ids = keyedLive.associateBy { it.iccid }
         byIccid.values.map { p ->
             val l = ids[p.iccid]
             RegisteredSub(
@@ -101,10 +103,12 @@ class SimRegistry(
             val list = runCatching { iface.listAllSubscriptions() }
                 .onFailure { Log.w(TAG, "listAllSubscriptions", it) }
                 .getOrNull() ?: return@launch
-            _live.value = list
+            val keyed = list.filter { it.iccid.isNotBlank() }
+            _live.value = keyed
             mutex.withLock {
-                val byIccid = _persisted.value.associateBy { it.iccid }.toMutableMap()
-                for (s in list) {
+                val byIccid = _persisted.value.filter { it.iccid.isNotBlank() }
+                    .associateBy { it.iccid }.toMutableMap()
+                for (s in keyed) {
                     val nick = byIccid[s.iccid]?.nickname
                     byIccid[s.iccid] = Persisted(s.iccid, s.displayName, s.carrierName, s.isEmbedded, nick)
                 }
