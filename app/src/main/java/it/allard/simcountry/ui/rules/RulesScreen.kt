@@ -70,6 +70,9 @@ fun RulesScreen(container: AppContainer, onEdit: (Int?) -> Unit) {
 
     Box(Modifier.fillMaxSize()) {
         LazyColumn(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+            item(key = "daemon-banner") {
+                DaemonRequiredBanner(allSims = allSims, pickerReady = sims)
+            }
             item(key = "defaults") {
                 DefaultsCard(
                     defaults = doc.defaults,

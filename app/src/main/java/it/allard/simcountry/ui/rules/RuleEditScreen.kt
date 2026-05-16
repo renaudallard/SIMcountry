@@ -96,6 +96,8 @@ fun RuleEditScreen(
             style = MaterialTheme.typography.titleLarge,
         )
 
+        DaemonRequiredBanner(allSims = allSims, pickerReady = sims)
+
         OutlinedTextField(
             value = country?.let { "${it.name} (${it.iso})" } ?: "",
             onValueChange = {},

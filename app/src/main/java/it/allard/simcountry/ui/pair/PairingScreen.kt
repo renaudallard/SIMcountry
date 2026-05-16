@@ -118,12 +118,19 @@ fun PairingScreen(container: AppContainer, onDone: () -> Unit) {
                     lastResult = null
                     scope.launch {
                         val r = container.autostart.pair(code)
-                        pairing = false
-                        lastResult = r.fold(
-                            onSuccess = { "Pairing succeeded." },
-                            onFailure = { "Pairing failed: ${it.message ?: it::class.simpleName}" },
-                        )
-                        if (r.isSuccess) onDone()
+                        if (r.isSuccess) {
+                            val reconnect = container.autostart.reconnectDaemon()
+                            container.simRegistry.refresh()
+                            pairing = false
+                            lastResult = reconnect.fold(
+                                onSuccess = { "Pairing succeeded and the daemon is starting." },
+                                onFailure = { "Paired, but starting the daemon failed: ${it.message ?: it::class.simpleName}" },
+                            )
+                            if (reconnect.isSuccess) onDone()
+                        } else {
+                            pairing = false
+                            lastResult = "Pairing failed: ${r.exceptionOrNull()?.message ?: r.exceptionOrNull()?.javaClass?.simpleName}"
+                        }
                     }
                 },
             ) { Text(if (pairing) "Pairing..." else "Pair") }
