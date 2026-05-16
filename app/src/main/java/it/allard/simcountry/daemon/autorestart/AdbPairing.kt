@@ -82,8 +82,7 @@ class AdbPairing(
         Socket().use { plain ->
             plain.soTimeout = timeoutMs
             plain.connect(InetSocketAddress(host, port), timeoutMs)
-            val cert = AdbCertificate.selfSign(key)
-            val ctx = AdbTls.newContext(cert, key.privateKey)
+            val ctx = AdbTls.newContext(key.selfSignedCertificate, key.privateKey)
             val tls = ctx.socketFactory.createSocket(plain, host, port, false) as SSLSocket
             tls.useClientMode = true
             AdbTls.applyAlpn(tls)

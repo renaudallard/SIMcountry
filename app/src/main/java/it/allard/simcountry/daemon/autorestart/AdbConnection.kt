@@ -100,8 +100,7 @@ class AdbConnection(
     }
 
     private fun upgradeToTls(plain: Socket): SSLSocket {
-        val cert = AdbCertificate.selfSign(key)
-        val ctx = AdbTls.newContext(cert, key.privateKey)
+        val ctx = AdbTls.newContext(key.selfSignedCertificate, key.privateKey)
         val tls = ctx.socketFactory.createSocket(plain, host, port, false) as SSLSocket
         tls.useClientMode = true
         AdbTls.applyAlpn(tls)

@@ -37,6 +37,7 @@ import java.nio.ByteOrder
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.Signature
+import java.security.cert.X509Certificate
 import java.security.interfaces.RSAPrivateKey
 import java.security.interfaces.RSAPublicKey
 import java.security.spec.PKCS8EncodedKeySpec
@@ -57,6 +58,13 @@ class AdbRsaKey internal constructor(
     val publicKey: RSAPublicKey,
     val userHost: String,
 ) {
+
+    /**
+     * Self-signed X.509 cert wrapping [publicKey], built lazily on first
+     * access. The cert is content-free aside from the embedded key, so a
+     * single instance can be reused across every connect.
+     */
+    val selfSignedCertificate: X509Certificate by lazy { AdbCertificate.selfSign(this) }
 
     /** Sign a token under PKCS#1 v1.5; the token is treated as the digest. */
     fun sign(token: ByteArray): ByteArray {
