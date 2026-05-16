@@ -55,8 +55,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import it.allard.simcountry.data.AppContainer
+import it.allard.simcountry.rules.AspectRules
 import it.allard.simcountry.rules.CountryRule
+import it.allard.simcountry.rules.SimRef
 import it.allard.simcountry.telephony.Mcc
+import it.allard.simcountry.telephony.SimRegistry
 
 @Composable
 fun RulesScreen(container: AppContainer, onEdit: (Int?) -> Unit) {
@@ -65,17 +68,27 @@ fun RulesScreen(container: AppContainer, onEdit: (Int?) -> Unit) {
     val labelByIccid = sims.associateBy({ it.iccid }, { it.label })
 
     Box(Modifier.fillMaxSize()) {
-        if (doc.rules.isEmpty()) {
-            Column(
-                modifier = Modifier.fillMaxSize().padding(24.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text("No rules yet.", style = MaterialTheme.typography.titleMedium)
-                Text("Tap + to add one.", style = MaterialTheme.typography.bodyMedium)
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+            item(key = "defaults") {
+                DefaultsCard(
+                    defaults = doc.defaults,
+                    sims = sims,
+                    onChange = { next ->
+                        container.rulesStore.update { it.copy(defaults = next) }
+                    },
+                )
             }
-        } else {
-            LazyColumn(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+            if (doc.rules.isEmpty()) {
+                item(key = "empty") {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text("No country overrides yet.", style = MaterialTheme.typography.titleMedium)
+                        Text("Tap + to add one.", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            } else {
                 itemsIndexed(
                     items = doc.rules,
                     key = { idx, r -> "$idx-${r.iso}-${r.mcc.orEmpty()}-${r.mnc.orEmpty()}" },
@@ -95,7 +108,7 @@ fun RulesScreen(container: AppContainer, onEdit: (Int?) -> Unit) {
             onClick = { onEdit(null) },
             modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp),
         ) {
-            Icon(Icons.Outlined.Add, contentDescription = "Add")
+            Icon(Icons.Outlined.Add, contentDescription = "Add country override")
         }
     }
 }
@@ -152,4 +165,30 @@ private fun AspectLine(name: String, iccid: String?, labels: Map<String, String>
         else -> labels[iccid] ?: iccid.takeLast(6)
     }
     Text("$name: $display", style = MaterialTheme.typography.bodyMedium)
+}
+
+@Composable
+private fun DefaultsCard(
+    defaults: AspectRules,
+    sims: List<SimRegistry.RegisteredSub>,
+    onChange: (AspectRules) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Default SIMs", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Applied everywhere unless a country override below matches.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            SimPicker("Data", defaults.data?.iccid, sims, leaveAloneText = "No default") { iccid ->
+                onChange(defaults.copy(data = iccid?.let { SimRef(it) }))
+            }
+            SimPicker("Voice", defaults.voice?.iccid, sims, leaveAloneText = "No default") { iccid ->
+                onChange(defaults.copy(voice = iccid?.let { SimRef(it) }))
+            }
+            SimPicker("SMS", defaults.sms?.iccid, sims, leaveAloneText = "No default") { iccid ->
+                onChange(defaults.copy(sms = iccid?.let { SimRef(it) }))
+            }
+        }
+    }
 }
