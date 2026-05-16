@@ -110,12 +110,62 @@ class AdbConnection(
     }
 
     private fun readCnxnFromServer(socket: SSLSocket) {
-        val packet = readPacket(socket.inputStream)
-        if (packet.command != AdbProtocol.CMD_CNXN) {
-            throw ProtocolException(
-                "expected CNXN after TLS, got ${AdbProtocol.nameOf(packet.command)}",
-            )
+        // Modern adbd, when the TLS client cert matches a key authorised at
+        // pairing time, replies straight with CNXN. Older adbd, or one that
+        // has forgotten our key, runs the legacy AUTH dance instead:
+        //
+        //   server -> AUTH(TOKEN, <20-byte challenge>)
+        //   client -> AUTH(SIGNATURE, <RSA-signed challenge>)
+        //   [if server accepts]  server -> CNXN
+        //   [if server rejects]  server -> AUTH(TOKEN, <new challenge>)
+        //                        client -> AUTH(RSAPUBLICKEY, <ADB pubkey>)
+        //                        user authorises on the device
+        //                        server -> CNXN
+        //
+        // Walk through up to MAX_AUTH_ROUNDS before giving up.
+        var sentSignature = false
+        var sentPublicKey = false
+        repeat(MAX_AUTH_ROUNDS) {
+            val packet = readPacket(socket.inputStream)
+            when (packet.command) {
+                AdbProtocol.CMD_CNXN -> return
+                AdbProtocol.CMD_AUTH -> {
+                    if (packet.arg0 != AdbProtocol.AUTH_TOKEN) {
+                        throw ProtocolException("unexpected AUTH subtype ${packet.arg0}")
+                    }
+                    if (packet.payload.size != AUTH_TOKEN_SIZE) {
+                        throw ProtocolException(
+                            "AUTH token must be $AUTH_TOKEN_SIZE bytes, got ${packet.payload.size}",
+                        )
+                    }
+                    if (!sentSignature) {
+                        writePacket(
+                            socket.outputStream,
+                            AdbProtocol.CMD_AUTH,
+                            AdbProtocol.AUTH_SIGNATURE,
+                            0,
+                            key.sign(packet.payload),
+                        )
+                        sentSignature = true
+                    } else if (!sentPublicKey) {
+                        writePacket(
+                            socket.outputStream,
+                            AdbProtocol.CMD_AUTH,
+                            AdbProtocol.AUTH_RSAPUBLICKEY,
+                            0,
+                            key.adbAuthorizedKeyLine(),
+                        )
+                        sentPublicKey = true
+                    } else {
+                        throw ProtocolException("adbd rejected our signature and public key")
+                    }
+                }
+                else -> throw ProtocolException(
+                    "expected CNXN/AUTH after TLS, got ${AdbProtocol.nameOf(packet.command)}",
+                )
+            }
         }
+        throw ProtocolException("adbd kept requesting AUTH after $MAX_AUTH_ROUNDS rounds")
     }
 
     private fun openShell(socket: SSLSocket, command: String): Int {
@@ -205,6 +255,8 @@ class AdbConnection(
         private const val SYSTEM_ID_FEATURES = "host::features=shell_v2,cmd"
         private const val OUR_LOCAL_ID = 1
         private const val STLS_VERSION = 1
+        private const val AUTH_TOKEN_SIZE = 20
+        private const val MAX_AUTH_ROUNDS = 4
         private val EMPTY = ByteArray(0)
     }
 }
