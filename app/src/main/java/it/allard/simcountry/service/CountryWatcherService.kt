@@ -113,7 +113,7 @@ class CountryWatcherService : Service() {
 
     private fun startForegroundCompat() {
         val n = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setSmallIcon(R.drawable.ic_stat_watcher)
             .setContentTitle(getString(R.string.watcher_notification_title))
             .setContentText(getString(R.string.watcher_notification_text))
             .setOngoing(true)
