@@ -31,11 +31,3 @@
 
 # AIDL-generated stubs/parcelables must not be shrunk.
 -keep class it.allard.simcountry.ipc.** { *; }
-
-# Hidden-API reflection: names are looked up at runtime; cannot be renamed.
--keepclassmembers class android.telephony.SubscriptionManager {
-    public *** setDefaultDataSubId(int);
-    public *** setDefaultVoiceSubId(int);
-    public *** setDefaultSmsSubId(int);
-    public *** getAvailableSubscriptionInfoList();
-}
