@@ -33,8 +33,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Rule
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.Rule
 import androidx.compose.material.icons.outlined.SimCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -99,7 +99,7 @@ fun AppNav(container: AppContainer) {
                             Icon(
                                 imageVector = when (d) {
                                     Dest.Status -> Icons.Outlined.Info
-                                    Dest.Rules -> Icons.Outlined.Rule
+                                    Dest.Rules -> Icons.AutoMirrored.Outlined.Rule
                                     Dest.Sims -> Icons.Outlined.SimCard
                                     else -> Icons.Outlined.Info
                                 },

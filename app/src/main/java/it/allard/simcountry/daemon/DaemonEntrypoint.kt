@@ -44,6 +44,7 @@ object DaemonEntrypoint {
     private const val APP_PACKAGE = "it.allard.simcountry"
 
     @JvmStatic
+    @Suppress("DEPRECATION")
     fun main(args: Array<String>) {
         Looper.prepareMainLooper()
         val pid = Process.myPid()
