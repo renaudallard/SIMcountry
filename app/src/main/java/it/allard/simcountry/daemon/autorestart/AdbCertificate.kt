@@ -47,8 +47,8 @@ import java.util.Date
 object AdbCertificate {
 
     /**
-     * Build a self-signed certificate that valid for ten years, signed by
-     * the key inside [adbKey]. The subject and issuer DN are both `CN=adb`.
+     * Build a self-signed certificate valid for ten years, signed by the
+     * key inside [adbKey]. The subject and issuer DN are both `CN=adb`.
      */
     fun selfSign(adbKey: AdbRsaKey): X509Certificate {
         val now = System.currentTimeMillis()
