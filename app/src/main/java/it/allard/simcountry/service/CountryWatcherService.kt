@@ -72,6 +72,7 @@ class CountryWatcherService : Service() {
     private val watcher = CountryWatcher()
     private val callbacks = mutableMapOf<Int, TelephonyCallback>()
     private var tickJob: Job? = null
+    private var overrideCheckJob: Job? = null
     private var subsChangedListener: SubscriptionManager.OnSubscriptionsChangedListener? = null
     private val callbackExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "simcountry-telephony").apply { isDaemon = true }
@@ -318,8 +319,9 @@ class CountryWatcherService : Service() {
         }
         app.container.overrideDetector.recordOurSwitch(mcc, newData, newVoice, newSms)
         app.container.simRegistry.refresh()
-        scope.launch {
-            kotlinx.coroutines.delay(15_000)
+        overrideCheckJob?.cancel()
+        overrideCheckJob = scope.launch {
+            delay(15_000)
             val cur = runCatching {
                 Triple(client.defaultDataSubId, client.defaultVoiceSubId, client.defaultSmsSubId)
             }.getOrNull() ?: return@launch
