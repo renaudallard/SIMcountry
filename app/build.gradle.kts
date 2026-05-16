@@ -46,6 +46,23 @@ android {
         versionName = "0.1.3"
     }
 
+    signingConfigs {
+        create("release") {
+            val path = providers.gradleProperty("SIMCOUNTRY_KEYSTORE_PATH").orNull
+            val keystoreFile = path?.let { file(it) }
+            if (keystoreFile != null && keystoreFile.isFile) {
+                storeFile = keystoreFile
+                storePassword = providers.gradleProperty("SIMCOUNTRY_KEYSTORE_PASSWORD").orNull
+                keyAlias = providers.gradleProperty("SIMCOUNTRY_KEY_ALIAS").orNull
+                keyPassword = providers.gradleProperty("SIMCOUNTRY_KEY_PASSWORD").orNull
+                enableV2Signing = true
+                enableV3Signing = true
+            } else if (path != null) {
+                logger.warn("SIMCOUNTRY_KEYSTORE_PATH=$path does not exist; release will be unsigned.")
+            }
+        }
+    }
+
     buildFeatures {
         compose = true
         aidl = true
@@ -65,6 +82,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            val releaseSigning = signingConfigs.getByName("release")
+            if (releaseSigning.storeFile != null) {
+                signingConfig = releaseSigning
+            }
         }
     }
 
