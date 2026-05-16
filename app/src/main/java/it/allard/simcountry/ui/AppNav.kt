@@ -68,17 +68,26 @@ private sealed class Dest(val route: String, val label: String) {
 
 private val bottomDests = listOf(Dest.Status, Dest.Rules, Dest.Sims)
 
+private fun parentTabRoute(currentRoute: String?): String? {
+    if (currentRoute == null) return null
+    return when {
+        currentRoute.startsWith("ruleEdit/") -> Dest.Rules.route
+        else -> currentRoute
+    }
+}
+
 @Composable
 fun AppNav(container: AppContainer) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
+    val selectedTab = parentTabRoute(currentRoute)
     Scaffold(
         bottomBar = {
             NavigationBar {
                 bottomDests.forEach { d ->
                     NavigationBarItem(
-                        selected = currentRoute == d.route,
+                        selected = selectedTab == d.route,
                         onClick = {
                             nav.navigate(d.route) {
                                 popUpTo(Dest.Status.route) { saveState = true }
