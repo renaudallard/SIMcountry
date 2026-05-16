@@ -96,6 +96,7 @@ class CountryWatcherService : Service() {
         refreshSubscriptionCallbacks()
         startSubscriptionsChangedListener()
         startTickLoop()
+        startDaemonReconnectLoop()
         return START_STICKY
     }
 
@@ -254,6 +255,23 @@ class CountryWatcherService : Service() {
                     if (settled != null) applyRule(doc, settled)
                     delay(5_000)
                 }
+            }
+        }
+    }
+
+    private fun startDaemonReconnectLoop() {
+        scope.launch {
+            var wasConnected = false
+            app.container.simControlClient.state.collect { st ->
+                val isConnected = st is SimControlClient.State.Connected
+                if (isConnected && !wasConnected) {
+                    val current = watcher.currentSettled
+                    if (current != null) {
+                        Log.i(TAG, "daemon reconnected; re-applying mcc=${current.mcc}")
+                        applyRule(app.container.rulesStore.doc.value, CountryWatcher.Settled(current, null))
+                    }
+                }
+                wasConnected = isConnected
             }
         }
     }
