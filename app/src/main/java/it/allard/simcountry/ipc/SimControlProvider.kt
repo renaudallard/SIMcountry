@@ -54,7 +54,6 @@ class SimControlProvider : ContentProvider() {
                 Log.i(TAG, "daemon attached from uid=$uid pid=${Binder.getCallingPid()}")
                 Bundle().apply { putBoolean("ok", true) }
             }
-            METHOD_QUERY -> Bundle().apply { putBinder(KEY_BINDER, BinderHolder.binder.value) }
             else -> null
         }
     }
