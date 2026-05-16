@@ -40,7 +40,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import it.allard.simcountry.telephony.Mcc
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 
 class RulesStore(context: Context) {
@@ -58,9 +63,44 @@ class RulesStore(context: Context) {
     private val _doc = MutableStateFlow(load())
     val doc: StateFlow<RulesDoc> = _doc.asStateFlow()
 
-    private fun load(): RulesDoc = try {
-        if (!file.exists()) RulesDoc()
-        else json.decodeFromString(RulesDoc.serializer(), file.readText())
+    @Serializable
+    private data class V1Rule(
+        val mcc: String,
+        val mnc: String? = null,
+        val aspects: AspectRules = AspectRules(),
+    )
+
+    @Serializable
+    private data class V1Doc(
+        val version: Int = 1,
+        val rules: List<V1Rule> = emptyList(),
+        val defaults: AspectRules = AspectRules(),
+        val policy: Policy = Policy(),
+    )
+
+    private fun load(): RulesDoc {
+        if (!file.exists()) return RulesDoc()
+        return loadFromText(file.readText())
+    }
+
+    private fun loadFromText(text: String): RulesDoc = try {
+        val version = json.parseToJsonElement(text)
+            .jsonObject["version"]?.jsonPrimitive?.intOrNull ?: 1
+        if (version >= 2) {
+            json.decodeFromString(RulesDoc.serializer(), text)
+        } else {
+            val v1 = json.decodeFromString(V1Doc.serializer(), text)
+            val migrated = v1.rules.mapNotNull { lr ->
+                val iso = Mcc.byMcc[lr.mcc]?.iso
+                if (iso == null) {
+                    Log.w(TAG, "dropping legacy rule for unknown mcc=${lr.mcc}")
+                    null
+                } else {
+                    CountryRule(iso = iso, mcc = lr.mcc, mnc = lr.mnc, aspects = lr.aspects)
+                }
+            }
+            RulesDoc(version = 2, rules = migrated, defaults = v1.defaults, policy = v1.policy)
+        }
     } catch (t: Throwable) {
         Log.w(TAG, "load failed; starting with empty rules", t)
         RulesDoc()

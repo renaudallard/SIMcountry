@@ -45,7 +45,8 @@ data class AspectRules(
 
 @Serializable
 data class CountryRule(
-    val mcc: String,
+    val iso: String,
+    val mcc: String? = null,
     val mnc: String? = null,
     val aspects: AspectRules = AspectRules(),
 )
@@ -60,7 +61,7 @@ data class Policy(
 
 @Serializable
 data class RulesDoc(
-    val version: Int = 1,
+    val version: Int = 2,
     val rules: List<CountryRule> = emptyList(),
     val defaults: AspectRules = AspectRules(),
     val policy: Policy = Policy(),

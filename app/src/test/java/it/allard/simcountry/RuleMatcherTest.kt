@@ -42,30 +42,53 @@ class RuleMatcherTest {
 
     private val ch = SimRef("8941001111111111111")
     private val eu = SimRef("8941002222222222222")
+    private val verizon = SimRef("8941003333333333333")
+
     private val doc = RulesDoc(
         rules = listOf(
-            CountryRule(mcc = "228", aspects = AspectRules(data = ch, voice = ch)),
-            CountryRule(mcc = "208", mnc = "01", aspects = AspectRules(sms = eu)),
+            // Any Swiss MCC -> ch
+            CountryRule(iso = "CH", aspects = AspectRules(data = ch, voice = ch)),
+            // France with operator 01 narrowing -> eu
+            CountryRule(iso = "FR", mnc = "01", aspects = AspectRules(sms = eu)),
+            // Any US MCC -> eu (base US rule)
+            CountryRule(iso = "US", aspects = AspectRules(data = eu)),
+            // US MCC 311 specifically -> verizon (overrides the base US rule)
+            CountryRule(iso = "US", mcc = "311", aspects = AspectRules(data = verizon)),
         ),
         defaults = AspectRules(data = eu),
     )
 
-    @Test fun mccOnlyMatch() {
+    @Test fun isoOnlyMatchByAnyCountryMcc() {
         val m = RuleMatcher.match(doc, "228", null)!!
         assertEquals(ch, m.data)
         assertEquals(ch, m.voice)
         assertNull(m.sms)
     }
 
-    @Test fun mccMncExactBeatsMccOnly() {
+    @Test fun mncNarrowingApplies() {
         val m = RuleMatcher.match(doc, "208", "01")!!
         assertEquals(eu, m.sms)
         assertEquals(eu, m.data)
         assertNull(m.voice)
     }
 
-    @Test fun mccUnknownReturnsNull() {
+    @Test fun mccOverrideBeatsBaseCountryRule() {
+        val m = RuleMatcher.match(doc, "311", null)!!
+        assertEquals(verizon, m.data)
+    }
+
+    @Test fun baseCountryRuleStillCoversOtherMccs() {
+        val m = RuleMatcher.match(doc, "310", null)!!
+        assertEquals(eu, m.data)
+    }
+
+    @Test fun unknownMccReturnsNull() {
         assertNull(RuleMatcher.match(doc, "999", null))
+    }
+
+    @Test fun unmappedMccReturnsNull() {
+        // 200 is not assigned to any country.
+        assertNull(RuleMatcher.match(doc, "200", null))
     }
 
     @Test fun nullMccReturnsNull() {

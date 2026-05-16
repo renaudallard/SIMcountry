@@ -29,6 +29,7 @@
 
 package it.allard.simcountry.ui.rules
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -43,8 +44,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -60,22 +61,27 @@ import it.allard.simcountry.data.AppContainer
 import it.allard.simcountry.rules.AspectRules
 import it.allard.simcountry.rules.CountryRule
 import it.allard.simcountry.rules.SimRef
+import it.allard.simcountry.telephony.Mcc
 
 @Composable
 fun RuleEditScreen(
     container: AppContainer,
-    initialMcc: String?,
+    index: Int?,
     onDone: () -> Unit,
 ) {
     val doc by container.rulesStore.doc.collectAsState()
     val sims by container.simRegistry.subs.collectAsState()
-    val existing = doc.rules.firstOrNull { it.mcc == initialMcc }
+    val existing = index?.let { doc.rules.getOrNull(it) }
 
-    var mcc by remember { mutableStateOf(existing?.mcc ?: "") }
+    var iso by remember { mutableStateOf(existing?.iso ?: "") }
+    var mccNarrowing by remember { mutableStateOf(existing?.mcc) }
     var mnc by remember { mutableStateOf(existing?.mnc ?: "") }
     var data by remember { mutableStateOf(existing?.aspects?.data?.iccid) }
     var voice by remember { mutableStateOf(existing?.aspects?.voice?.iccid) }
     var sms by remember { mutableStateOf(existing?.aspects?.sms?.iccid) }
+    var pickerOpen by remember { mutableStateOf(false) }
+
+    val country = Mcc.byIso[iso]
 
     Column(
         modifier = Modifier
@@ -90,16 +96,22 @@ fun RuleEditScreen(
         )
 
         OutlinedTextField(
-            value = mcc,
-            onValueChange = { mcc = it.filter { c -> c.isDigit() }.take(3) },
-            label = { Text("MCC (3 digits, e.g. 228 = CH)") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            value = country?.let { "${it.name} (${it.iso})" } ?: "",
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Country") },
+            placeholder = { Text("Tap to choose") },
+            modifier = Modifier.fillMaxWidth().clickable { pickerOpen = true },
         )
+
+        if (country != null && country.mccs.size > 1) {
+            McNarrowingPicker(country.mccs, mccNarrowing) { mccNarrowing = it }
+        }
+
         OutlinedTextField(
             value = mnc,
             onValueChange = { mnc = it.filter { c -> c.isDigit() }.take(3) },
-            label = { Text("MNC (optional)") },
+            label = { Text("Operator MNC narrowing (optional)") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -115,10 +127,11 @@ fun RuleEditScreen(
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
-                enabled = mcc.length == 3,
+                enabled = iso.length == 2,
                 onClick = {
                     val rule = CountryRule(
-                        mcc = mcc,
+                        iso = iso,
+                        mcc = mccNarrowing,
                         mnc = mnc.ifBlank { null },
                         aspects = AspectRules(
                             data = data?.let { SimRef(it) },
@@ -126,14 +139,68 @@ fun RuleEditScreen(
                             sms = sms?.let { SimRef(it) },
                         ),
                     )
-                    container.rulesStore.update {
-                        val others = it.rules.filterNot { r -> r.mcc == rule.mcc && r.mnc == rule.mnc }
-                        it.copy(rules = others + rule)
+                    container.rulesStore.update { current ->
+                        val without = if (existing != null) {
+                            current.rules.filterIndexed { i, _ -> i != index }
+                        } else {
+                            current.rules
+                        }
+                        val noCollisions = without.filterNot {
+                            it.iso == rule.iso && it.mcc == rule.mcc && it.mnc == rule.mnc
+                        }
+                        current.copy(rules = noCollisions + rule)
                     }
                     onDone()
                 },
             ) { Text(if (existing == null) "Add" else "Save") }
             TextButton(onClick = onDone) { Text("Cancel") }
+        }
+    }
+
+    if (pickerOpen) {
+        CountryPickerSheet(
+            onPick = { c ->
+                iso = c.iso
+                mccNarrowing = null
+                pickerOpen = false
+            },
+            onDismiss = { pickerOpen = false },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun McNarrowingPicker(
+    available: List<String>,
+    selected: String?,
+    onChange: (String?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val label = selected ?: "Any MCC"
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+    ) {
+        OutlinedTextField(
+            value = label,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("MCC narrowing (optional)") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable, true),
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Any MCC") },
+                onClick = { onChange(null); expanded = false },
+            )
+            available.forEach { mcc ->
+                DropdownMenuItem(
+                    text = { Text("Only MCC $mcc") },
+                    onClick = { onChange(mcc); expanded = false },
+                )
+            }
         }
     }
 }

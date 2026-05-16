@@ -29,16 +29,19 @@
 
 package it.allard.simcountry.ui.rules
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material3.Card
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -52,11 +55,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import it.allard.simcountry.data.AppContainer
-import it.allard.simcountry.rules.AspectRules
 import it.allard.simcountry.rules.CountryRule
+import it.allard.simcountry.telephony.Mcc
 
 @Composable
-fun RulesScreen(container: AppContainer, onEdit: (String?) -> Unit) {
+fun RulesScreen(container: AppContainer, onEdit: (Int?) -> Unit) {
     val doc by container.rulesStore.doc.collectAsState()
     val sims by container.simRegistry.subs.collectAsState()
     val labelByIccid = sims.associateBy({ it.iccid }, { it.label })
@@ -65,7 +68,7 @@ fun RulesScreen(container: AppContainer, onEdit: (String?) -> Unit) {
         if (doc.rules.isEmpty()) {
             Column(
                 modifier = Modifier.fillMaxSize().padding(24.dp),
-                verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+                verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text("No rules yet.", style = MaterialTheme.typography.titleMedium)
@@ -73,38 +76,18 @@ fun RulesScreen(container: AppContainer, onEdit: (String?) -> Unit) {
             }
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize().padding(8.dp)) {
-                items(doc.rules, key = { it.mcc + "/" + (it.mnc ?: "") }) { rule ->
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp),
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            androidx.compose.foundation.layout.Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        "MCC ${rule.mcc}" + (rule.mnc?.let { " / MNC $it" } ?: ""),
-                                        style = MaterialTheme.typography.titleMedium,
-                                        modifier = Modifier.padding(bottom = 4.dp),
-                                    )
-                                    AspectLine("Data", rule.aspects.data?.iccid, labelByIccid)
-                                    AspectLine("Voice", rule.aspects.voice?.iccid, labelByIccid)
-                                    AspectLine("SMS", rule.aspects.sms?.iccid, labelByIccid)
-                                }
-                                IconButton(onClick = { onEdit(rule.mcc) }) {
-                                    Icon(Icons.Outlined.Add, contentDescription = "Edit")
-                                }
-                                IconButton(onClick = {
-                                    container.rulesStore.update { it.copy(rules = it.rules - rule) }
-                                }) {
-                                    Icon(Icons.Outlined.Delete, contentDescription = "Delete")
-                                }
-                            }
-                        }
-                    }
+                itemsIndexed(
+                    items = doc.rules,
+                    key = { idx, r -> "$idx-${r.iso}-${r.mcc.orEmpty()}-${r.mnc.orEmpty()}" },
+                ) { idx, rule ->
+                    RuleCard(
+                        rule = rule,
+                        labels = labelByIccid,
+                        onEdit = { onEdit(idx) },
+                        onDelete = {
+                            container.rulesStore.update { it.copy(rules = it.rules - rule) }
+                        },
+                    )
                 }
             }
         }
@@ -118,6 +101,51 @@ fun RulesScreen(container: AppContainer, onEdit: (String?) -> Unit) {
 }
 
 @Composable
+private fun RuleCard(
+    rule: CountryRule,
+    labels: Map<String, String>,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+        Column(Modifier.padding(12.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "${Mcc.nameOf(rule.iso)} (${rule.iso})",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(bottom = 2.dp),
+                    )
+                    val narrowing = listOfNotNull(
+                        rule.mcc?.let { "MCC $it" },
+                        rule.mnc?.let { "MNC $it" },
+                    ).joinToString(", ")
+                    if (narrowing.isNotEmpty()) {
+                        Text(
+                            "only when $narrowing",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        )
+                    }
+                    AspectLine("Data", rule.aspects.data?.iccid, labels)
+                    AspectLine("Voice", rule.aspects.voice?.iccid, labels)
+                    AspectLine("SMS", rule.aspects.sms?.iccid, labels)
+                }
+                IconButton(onClick = onEdit) {
+                    Icon(Icons.Outlined.Edit, contentDescription = "Edit")
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Outlined.Delete, contentDescription = "Delete")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun AspectLine(name: String, iccid: String?, labels: Map<String, String>) {
     val display = when {
         iccid == null -> "leave alone"
@@ -125,6 +153,3 @@ private fun AspectLine(name: String, iccid: String?, labels: Map<String, String>
     }
     Text("$name: $display", style = MaterialTheme.typography.bodyMedium)
 }
-
-@Suppress("unused")
-private fun emptyRule(): CountryRule = CountryRule(mcc = "", aspects = AspectRules())

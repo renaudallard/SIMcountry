@@ -60,8 +60,8 @@ private sealed class Dest(val route: String, val label: String) {
     data object Status : Dest("status", "Status")
     data object Rules : Dest("rules", "Rules")
     data object Sims : Dest("sims", "SIMs")
-    data object RuleEdit : Dest("ruleEdit/{mcc}", "Edit rule") {
-        fun route(mcc: String?) = "ruleEdit/${mcc ?: NEW}"
+    data object RuleEdit : Dest("ruleEdit/{key}", "Edit rule") {
+        fun route(index: Int?) = "ruleEdit/${index?.toString() ?: NEW}"
         const val NEW = "_new"
     }
 }
@@ -120,7 +120,7 @@ fun AppNav(container: AppContainer) {
                 composable(Dest.Rules.route) {
                     RulesScreen(
                         container = container,
-                        onEdit = { mcc -> nav.navigate(Dest.RuleEdit.route(mcc)) },
+                        onEdit = { idx -> nav.navigate(Dest.RuleEdit.route(idx)) },
                     )
                 }
                 composable(Dest.Sims.route) {
@@ -128,13 +128,13 @@ fun AppNav(container: AppContainer) {
                 }
                 composable(
                     route = Dest.RuleEdit.route,
-                    arguments = listOf(navArgument("mcc") { type = NavType.StringType }),
+                    arguments = listOf(navArgument("key") { type = NavType.StringType }),
                 ) { entry ->
-                    val arg = entry.arguments?.getString("mcc")
-                    val initialMcc = if (arg == Dest.RuleEdit.NEW) null else arg
+                    val arg = entry.arguments?.getString("key")
+                    val index = if (arg == Dest.RuleEdit.NEW) null else arg?.toIntOrNull()
                     RuleEditScreen(
                         container = container,
-                        initialMcc = initialMcc,
+                        index = index,
                         onDone = { nav.popBackStack() },
                     )
                 }

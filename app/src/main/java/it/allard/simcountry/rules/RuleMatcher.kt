@@ -29,15 +29,27 @@
 
 package it.allard.simcountry.rules
 
+import it.allard.simcountry.telephony.Mcc
+
 object RuleMatcher {
 
     fun match(doc: RulesDoc, mcc: String?, mnc: String?): AspectRules? {
         if (mcc.isNullOrBlank()) return null
-        val exact = doc.rules.firstOrNull { it.mcc == mcc && it.mnc != null && it.mnc == mnc }
-        if (exact != null) return mergeWithDefaults(exact.aspects, doc.defaults)
-        val mccOnly = doc.rules.firstOrNull { it.mcc == mcc && it.mnc == null }
-        if (mccOnly != null) return mergeWithDefaults(mccOnly.aspects, doc.defaults)
-        return null
+        val iso = Mcc.byMcc[mcc]?.iso ?: return null
+        val candidates = doc.rules.filter { rule ->
+            rule.iso == iso &&
+                (rule.mcc == null || rule.mcc == mcc) &&
+                (rule.mnc == null || rule.mnc == mnc)
+        }
+        val best = candidates.maxByOrNull { specificity(it, mcc, mnc) } ?: return null
+        return mergeWithDefaults(best.aspects, doc.defaults)
+    }
+
+    private fun specificity(rule: CountryRule, mcc: String, mnc: String?): Int {
+        var score = 0
+        if (rule.mcc != null && rule.mcc == mcc) score += 10
+        if (rule.mnc != null && rule.mnc == mnc) score += 1
+        return score
     }
 
     private fun mergeWithDefaults(rule: AspectRules, defaults: AspectRules): AspectRules =
