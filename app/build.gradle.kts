@@ -107,6 +107,14 @@ android {
             )
         }
     }
+
+    applicationVariants.all {
+        val variant = this
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
+                "SIMcountry-${variant.versionName}.apk"
+        }
+    }
 }
 
 dependencies {
