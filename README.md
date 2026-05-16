@@ -29,6 +29,7 @@ Set one default SIM, then add country overrides. When the phone registers on a S
 - **Specificity-aware matching.** Optional MCC and MNC narrowing within a country; the most specific rule wins.
 - **Hysteresis built in.** Debounce, reverse hysteresis, minimum switch interval, and per-MCC suppression after a manual override.
 - **No external runtime dependency.** No Shizuku, no root, no Magisk.
+- **Wireless-ADB autostart.** One-time pairing with the six-digit code from Developer options; the daemon then comes back on every boot without a PC.
 
 ---
 
@@ -38,10 +39,15 @@ Changing the default SIM through `SubscriptionManager.setDefault*SubId` and swit
 
 This is the same architectural pattern as Shizuku, implemented in-tree so the app has no external runtime dependency.
 
-### v0.1.x scope
+### Autostart
 
-- One-time ADB command per boot. After a reboot, run the command again.
-- v0.2 will add Wireless-ADB self-restart so the daemon survives reboots without re-running anything.
+After the one-time ADB command starts the daemon for the first time, the app can be paired with Wireless Debugging so future boots re-launch the daemon automatically:
+
+1. In the device's Developer options, enable **Wireless debugging** and tap **Pair device with pairing code**.
+2. In SIMcountry's **Status** tab, tap **Pair Wireless ADB** and type the six-digit code from the dialog.
+3. From then on, the `BootReceiver` runs the same daemon-start command over Wireless ADB on every `BOOT_COMPLETED`, presenting the RSA key authorised during pairing.
+
+The pairing handshake follows AOSP's `pairing_connection` wire format: TLSv1.3 with ALPN `adb`, SPAKE2 over Ed25519 with the M and N constants from BoringSSL, AES-128-GCM-encrypted PeerInfo. The implementation has only been validated by in-repo round trips; first run against a real device is the moment to confirm everything matches adbd.
 
 ---
 
@@ -115,6 +121,9 @@ app/src/main/aidl/it/allard/simcountry/ipc/
 
 app/src/main/java/it/allard/simcountry/
   daemon/                runs as shell UID; calls hidden telephony APIs
+  daemon/autorestart/    Wireless-ADB self-restart: ADB protocol, RSA
+                         key, TLS+ALPN, mDNS, Ed25519 math, SPAKE2,
+                         pairing handshake, autostart coordinator
   ipc/                   ContentProvider handover, client wrapper
   telephony/             CountryWatcher, SimRegistry, OverrideDetector,
                          KeyguardGate, Mcc (E.212 country dataset)
@@ -145,7 +154,7 @@ The daemon, running as shell UID, uses framework permissions tied to that UID (n
 ## Limitations
 
 - **eSIM profile activation** uses `EuiccManager.switchToSubscription`. The required callback `PendingIntent` is minted on a `com.android.shell` package context, so the call goes through on devices where the shell UID can mint PendingIntents for that package. On devices where the shell UID is not granted `WRITE_EMBEDDED_SUBSCRIPTIONS` the call is still rejected with `SecurityException`; the app then switches the default to whatever profile is already active and logs the failure.
-- **Daemon does not survive a reboot in v0.1.x.** Re-run the ADB command after every reboot. v0.2 will add Wireless-ADB self-restart.
+- **Wireless-ADB autostart is unverified on hardware.** The SPAKE2 + AES-GCM pairing flow is implemented against the AOSP source listing and passes in-repo round trips, but the first real-device run is the moment to confirm everything matches adbd. Until pairing succeeds the daemon does not survive a reboot, and the manual ADB command is the fallback.
 - **App-process death is recoverable but not automatic.** If the app process is killed while the daemon is alive, the in-memory Binder reference is lost; the daemon stays idle until the next ADB run. After the daemon reattaches, the watcher re-applies the current country automatically.
 
 ---
@@ -160,7 +169,7 @@ The daemon, running as shell UID, uses framework permissions tied to that UID (n
 
 ## Status
 
-v0.1.2: functional skeleton with post-review fixes applied, plus an ISO-keyed rule schema, an E.212 country picker, and a Default SIMs card. Unit tests cover the rule matcher (8 cases including specificity scoring) and the country-watcher state machine. The full switching flow has not yet been validated on physical hardware; manual device testing on a Pixel running Android 13+ is mandatory before any release.
+v0.1.2: functional skeleton with post-review fixes applied, an ISO-keyed rule schema with an E.212 country picker and a Default SIMs card, plus an in-tree Wireless-ADB autostart pipeline (ADB protocol, RSA-2048 key in the legacy ADB format, TLSv1.3 with ALPN, mDNS service discovery, Edwards25519 group arithmetic, SPAKE2 matching BoringSSL's spake25519, and the AES-128-GCM PEER_INFO exchange). Unit tests cover the rule matcher, the country-watcher state machine, the ADB protocol codec, the RSA legacy key serializer, Ed25519 group laws, the AES-GCM stream layer, and SPAKE2 client/server round trips: 47 tests in total. The end-to-end switching and autostart flows have not yet been validated on physical hardware; manual device testing on a Pixel running Android 13+ is mandatory before any release.
 
 ---
 
