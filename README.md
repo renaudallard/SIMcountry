@@ -157,14 +157,6 @@ The daemon, running as shell UID, uses framework permissions tied to that UID (n
 
 ---
 
-## Roadmap
-
-- v0.2: Wireless-ADB self-restart so the daemon survives reboots without re-running anything from a PC.
-- v0.2: Per-aspect monitoring (watch each aspect's sub's MCC, not only the data sub's MCC).
-- Later: i18n country picker, broader test coverage on real OEM devices, release signing instructions.
-
----
-
 ## Status
 
 v0.1.2: functional skeleton with post-review fixes applied, plus an ISO-keyed rule schema, an E.212 country picker, and a Default SIMs card. Unit tests cover the rule matcher (8 cases including specificity scoring) and the country-watcher state machine. The full switching flow has not yet been validated on physical hardware; manual device testing on a Pixel running Android 13+ is mandatory before any release.
