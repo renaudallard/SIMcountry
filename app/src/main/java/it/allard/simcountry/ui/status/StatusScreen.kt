@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -45,6 +46,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import it.allard.simcountry.daemon.autorestart.AutostartCoordinator
 import it.allard.simcountry.data.AppContainer
 import it.allard.simcountry.ui.DaemonBanner
 import kotlinx.coroutines.launch
@@ -53,10 +55,11 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun StatusScreen(container: AppContainer) {
+fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
     val client = container.simControlClient
     val rulesDoc by container.rulesStore.doc.collectAsState()
     val suppressions by container.overrideDetector.suppressedUntil.collectAsState()
+    val autostartState by container.autostart.state.collectAsState()
     val scope = rememberCoroutineScope()
 
     Column(
@@ -67,6 +70,28 @@ fun StatusScreen(container: AppContainer) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         DaemonBanner(client)
+
+        Card(modifier = Modifier.padding(horizontal = 8.dp)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Autostart", style = MaterialTheme.typography.titleMedium)
+                when (val s = autostartState) {
+                    is AutostartCoordinator.State.Unpaired -> {
+                        Text("Not paired. The daemon must be started over ADB after every reboot.")
+                        Button(onClick = onPair) { Text("Pair Wireless ADB") }
+                    }
+                    is AutostartCoordinator.State.Paired -> {
+                        val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                        Text("Paired ${fmt.format(Date(s.pairedAt))}.")
+                        s.lastConnectAt?.let { Text("Last reconnect: ${fmt.format(Date(it))}") }
+                        s.lastError?.let { Text("Last error: $it", style = MaterialTheme.typography.bodySmall) }
+                        Button(onClick = {
+                            scope.launch { container.autostart.reconnectDaemon() }
+                        }) { Text("Reconnect daemon now") }
+                        TextButton(onClick = onPair) { Text("Re-pair") }
+                    }
+                }
+            }
+        }
 
         Card(modifier = Modifier.padding(horizontal = 8.dp)) {
             Column(Modifier.padding(16.dp)) {

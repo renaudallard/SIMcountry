@@ -32,12 +32,42 @@ package it.allard.simcountry.service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.util.Log
+import it.allard.simcountry.SimcountryApp
+import it.allard.simcountry.daemon.autorestart.AutostartCoordinator
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED,
-            Intent.ACTION_LOCKED_BOOT_COMPLETED -> CountryWatcherService.start(context)
+            Intent.ACTION_LOCKED_BOOT_COMPLETED -> {
+                CountryWatcherService.start(context)
+                tryRestartDaemon(context)
+            }
         }
+    }
+
+    private fun tryRestartDaemon(context: Context) {
+        val app = context.applicationContext as? SimcountryApp ?: return
+        val autostart = app.container.autostart
+        if (autostart.state.value !is AutostartCoordinator.State.Paired) return
+        val pending = goAsync()
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            try {
+                autostart.reconnectDaemon()
+                    .onSuccess { Log.i(TAG, "daemon restart kicked off after boot") }
+                    .onFailure { Log.w(TAG, "daemon restart after boot failed", it) }
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+
+    companion object {
+        private const val TAG = "BootReceiver"
     }
 }

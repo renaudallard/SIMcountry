@@ -51,6 +51,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import it.allard.simcountry.data.AppContainer
+import it.allard.simcountry.ui.pair.PairingScreen
 import it.allard.simcountry.ui.rules.RuleEditScreen
 import it.allard.simcountry.ui.rules.RulesScreen
 import it.allard.simcountry.ui.sims.SimsScreen
@@ -64,6 +65,7 @@ private sealed class Dest(val route: String, val label: String) {
         fun route(index: Int?) = "ruleEdit/${index?.toString() ?: NEW}"
         const val NEW = "_new"
     }
+    data object Pair : Dest("pair", "Pair Wireless ADB")
 }
 
 private val bottomDests = listOf(Dest.Status, Dest.Rules, Dest.Sims)
@@ -115,7 +117,13 @@ fun AppNav(container: AppContainer) {
         Box(Modifier.fillMaxSize().padding(padding)) {
             NavHost(navController = nav, startDestination = Dest.Status.route) {
                 composable(Dest.Status.route) {
-                    StatusScreen(container = container)
+                    StatusScreen(
+                        container = container,
+                        onPair = { nav.navigate(Dest.Pair.route) },
+                    )
+                }
+                composable(Dest.Pair.route) {
+                    PairingScreen(container = container, onDone = { nav.popBackStack() })
                 }
                 composable(Dest.Rules.route) {
                     RulesScreen(
