@@ -71,6 +71,7 @@ class CountryWatcherService : Service() {
     private val watcher = CountryWatcher()
     private val callbacks = mutableMapOf<Int, TelephonyCallback>()
     private var tickJob: Job? = null
+    private var subsChangedListener: SubscriptionManager.OnSubscriptionsChangedListener? = null
 
     private lateinit var app: SimcountryApp
     private lateinit var telephony: TelephonyManager
@@ -87,13 +88,15 @@ class CountryWatcherService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundCompat()
-        registerSubscriptionCallbacks()
+        refreshSubscriptionCallbacks()
+        startSubscriptionsChangedListener()
         startTickLoop()
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        stopSubscriptionsChangedListener()
         unregisterAllCallbacks()
         app.container.keyguardGate.stop()
         scope.cancel()
@@ -136,7 +139,8 @@ class CountryWatcherService : Service() {
         ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) ==
             PackageManager.PERMISSION_GRANTED
 
-    private fun registerSubscriptionCallbacks() {
+    @Synchronized
+    private fun refreshSubscriptionCallbacks() {
         if (!hasPhoneStatePermission()) {
             Log.w(TAG, "missing READ_PHONE_STATE; cannot watch service state")
             return
@@ -146,6 +150,15 @@ class CountryWatcherService : Service() {
         } catch (se: SecurityException) {
             Log.w(TAG, "no permission for activeSubscriptionInfoList", se)
             emptyList()
+        }
+        val activeIds = active.map { it.subscriptionId }.toSet()
+        val gone = callbacks.keys.filter { it !in activeIds }
+        for (subId in gone) {
+            val cb = callbacks.remove(subId) ?: continue
+            try {
+                telephony.createForSubscriptionId(subId).unregisterTelephonyCallback(cb)
+            } catch (_: Throwable) {
+            }
         }
         for (info in active) {
             val subId = info.subscriptionId
@@ -165,6 +178,7 @@ class CountryWatcherService : Service() {
         }
     }
 
+    @Synchronized
     private fun unregisterAllCallbacks() {
         for ((subId, cb) in callbacks) {
             try {
@@ -173,6 +187,30 @@ class CountryWatcherService : Service() {
             }
         }
         callbacks.clear()
+    }
+
+    private fun startSubscriptionsChangedListener() {
+        if (subsChangedListener != null) return
+        val listener = object : SubscriptionManager.OnSubscriptionsChangedListener() {
+            override fun onSubscriptionsChanged() {
+                refreshSubscriptionCallbacks()
+            }
+        }
+        try {
+            subs.addOnSubscriptionsChangedListener({ it.run() }, listener)
+            subsChangedListener = listener
+        } catch (t: Throwable) {
+            Log.w(TAG, "addOnSubscriptionsChangedListener failed", t)
+        }
+    }
+
+    private fun stopSubscriptionsChangedListener() {
+        val listener = subsChangedListener ?: return
+        try {
+            subs.removeOnSubscriptionsChangedListener(listener)
+        } catch (_: Throwable) {
+        }
+        subsChangedListener = null
     }
 
     private fun onAnyServiceStateChange() {
