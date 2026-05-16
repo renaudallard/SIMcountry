@@ -175,7 +175,7 @@ UID (notably `MODIFY_PHONE_STATE`).
 
 ## Status
 
-v0.1: functional skeleton. Unit tests cover the rule matcher and
+v0.1.1: functional skeleton with post-review fixes applied. Unit tests cover the rule matcher and
 country-watcher state machine. The full switching flow has not yet been
 validated on physical hardware; manual device testing on a Pixel running
 Android 13+ is mandatory before any release.
