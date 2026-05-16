@@ -64,7 +64,11 @@ For a release build, replace `it.allard.simcountry.debug` with
 
 1. `CountryWatcherService` runs as a `specialUse` foreground service and
    registers a `TelephonyCallback.ServiceStateListener` per active
-   subscription.
+   subscription. A `SubscriptionManager.OnSubscriptionsChangedListener` keeps
+   that set in sync when SIMs are inserted, removed, or activated, and also
+   picks up new subs that become visible after `READ_PHONE_STATE` is granted
+   at runtime. All telephony callbacks run on a dedicated single-thread
+   executor (`simcountry-telephony`).
 2. On each service state change it computes the country (MCC and optional
    MNC) of the default data subscription and feeds it to `CountryWatcher`.
 3. `CountryWatcher` applies debounce + hysteresis:
@@ -77,8 +81,13 @@ For a release build, replace `it.allard.simcountry.debug` with
    the daemon for each aspect listed in the rule.
 5. `OverrideDetector` records what we applied. If the default data SubId is
    later changed without our involvement, the MCC is suppressed for
-   `overrideSuppressionSec` (default 1h) and surfaces an undo in Status.
+   `overrideSuppressionSec` (default 1h) and surfaces an undo in Status. Only
+   the most recent switch carries an in-flight override check; the previous
+   one is cancelled.
 6. `KeyguardGate` skips switches while the device is locked.
+7. If the daemon disconnects and reconnects, the service re-applies the
+   current settled country against the latest rules so a switch that fired
+   while the daemon was down is not lost.
 
 ## Build
 
@@ -131,21 +140,26 @@ UID (notably `MODIFY_PHONE_STATE`).
 ## Limitations
 
 - **eSIM profile activation** uses `EuiccManager.switchToSubscription`.
-  On some devices the shell UID is not granted
-  `WRITE_EMBEDDED_SUBSCRIPTIONS` and the call is rejected with
-  `SecurityException`. In that case the app still switches the default to
-  an already-active profile, but cannot activate a disabled profile by
-  itself.
+  The required callback `PendingIntent` is minted on a
+  `com.android.shell` package context, so the call goes through on devices
+  where the shell UID can mint PendingIntents for that package. On devices
+  where the shell UID is not granted `WRITE_EMBEDDED_SUBSCRIPTIONS` the
+  call is still rejected with `SecurityException`; the app then switches
+  the default to whatever profile is already active and logs the failure.
 - **Daemon does not survive a reboot in v0.1.** Re-run the ADB command after
   every reboot. v0.2 will add Wireless-ADB self-restart.
-- **Single-process orchestration in v0.1.** If the app process is killed
-  while the daemon is alive, the app will rediscover the daemon's Binder
-  the next time the daemon attaches (typically after the next ADB run).
+- **App-process death is recoverable but not automatic.** If the app
+  process is killed while the daemon is alive, the in-memory Binder
+  reference is lost; the daemon stays idle until the next ADB run. After
+  the daemon reattaches, the watcher re-applies the current country
+  automatically.
 
 ## Security
 
-- The `SimControlProvider` only accepts an attached Binder if the caller's
-  UID is `shell` (2000) or `root` (0). Other apps cannot push a fake daemon.
+- The `SimControlProvider` exposes exactly one call method, `attachShell`,
+  and accepts it only when the caller's UID is `shell` (2000) or `root`
+  (0). Other apps cannot push a fake daemon, and there is no read-back
+  method that would let another app fetch the privileged Binder.
 - The daemon process exits if launched as a non-shell, non-root UID.
 - ADB debugging must be enabled on the device for setup; the user is
   responsible for keeping it off in untrusted environments.
