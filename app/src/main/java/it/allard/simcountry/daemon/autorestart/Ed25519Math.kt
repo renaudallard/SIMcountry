@@ -105,12 +105,20 @@ object Ed25519Math {
     /** -p. Negation in twisted Edwards: (-x, y, z, -t). */
     fun negate(p: Point): Point = Point(P.subtract(p.x).mod(P), p.y, p.z, P.subtract(p.t).mod(P))
 
-    /** Variable-base scalar multiplication: returns k * p. */
+    /**
+     * Variable-base scalar multiplication: returns k * p.
+     *
+     * The scalar is treated as an exact non-negative integer — no mod-L
+     * reduction. Reducing mod L would be a sound optimisation only when
+     * `p` is in the prime-order subgroup, but SPAKE2 multiplies points
+     * that carry small-order contamination, and the cofactor cancellation
+     * requires the scalar's low bits to survive intact.
+     */
     fun scalarMult(k: BigInteger, p: Point): Point {
+        require(k.signum() >= 0) { "scalar must be non-negative" }
         var result = IDENTITY
         var addend = p
-        var scalar = k.mod(L)
-        if (scalar.signum() < 0) scalar = scalar.add(L)
+        var scalar = k
         while (scalar.signum() > 0) {
             if (scalar.testBit(0)) result = add(result, addend)
             addend = add(addend, addend)

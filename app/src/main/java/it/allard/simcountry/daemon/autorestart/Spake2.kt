@@ -58,7 +58,10 @@ class Spake2(
 
     enum class Role { CLIENT, SERVER }
 
-    private val privateScalar: BigInteger = randomScalar(rng)
+    // BoringSSL pre-multiplies the random scalar by the curve cofactor (left_shift_3)
+    // so the cofactor is cleared *once* during scalar multiplication on the peer's
+    // unblinded point. Match that exactly: the integer value here is 8 * (rand mod L).
+    private val privateScalar: BigInteger = randomScalar(rng).multiply(COFACTOR)
     private val passwordScalar: BigInteger = derivePasswordScalar(password)
     private val myPwPoint: Ed25519Math.Point = if (role == Role.CLIENT) M_POINT else N_POINT
     private val theirPwPoint: Ed25519Math.Point = if (role == Role.CLIENT) N_POINT else M_POINT
@@ -85,8 +88,8 @@ class Spake2(
             theirPoint,
             Ed25519Math.scalarMult(negPwScalar, theirPwPoint),
         )
-        val clearedCofactor = Ed25519Math.scalarMult(COFACTOR, unblinded)
-        val k = Ed25519Math.scalarMult(privateScalar, clearedCofactor)
+        // privateScalar already includes the 8x cofactor factor; no extra multiply.
+        val k = Ed25519Math.scalarMult(privateScalar, unblinded)
         val kBytes = Ed25519Math.encode(k)
 
         val aliceMsg = if (role == Role.CLIENT) outboundMessage else theirMessage
