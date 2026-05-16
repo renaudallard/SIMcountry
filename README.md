@@ -47,7 +47,7 @@ After the one-time ADB command starts the daemon for the first time, the app can
 2. In SIMcountry's **Status** tab, tap **Pair Wireless ADB** and type the six-digit code from the dialog.
 3. From then on, the `BootReceiver` runs the same daemon-start command over Wireless ADB on every `BOOT_COMPLETED`, presenting the RSA key authorised during pairing.
 
-The pairing handshake follows AOSP's `pairing_connection` wire format: TLSv1.3 with ALPN `adb`, SPAKE2 over Ed25519 with the M and N constants from BoringSSL, AES-128-GCM-encrypted PeerInfo. The implementation has only been validated by in-repo round trips; first run against a real device is the moment to confirm everything matches adbd.
+The pairing handshake follows AOSP's `pairing_connection` wire format: TLSv1.3 with ALPN `adb`, SPAKE2 over Ed25519 with the M and N constants from BoringSSL, AES-128-GCM-encrypted PeerInfo.
 
 ---
 
@@ -154,7 +154,7 @@ The daemon, running as shell UID, uses framework permissions tied to that UID (n
 ## Limitations
 
 - **eSIM profile activation** uses `EuiccManager.switchToSubscription`. The required callback `PendingIntent` is minted on a `com.android.shell` package context, so the call goes through on devices where the shell UID can mint PendingIntents for that package. On devices where the shell UID is not granted `WRITE_EMBEDDED_SUBSCRIPTIONS` the call is still rejected with `SecurityException`; the app then switches the default to whatever profile is already active and logs the failure.
-- **Wireless-ADB autostart is unverified on hardware.** The SPAKE2 + AES-GCM pairing flow is implemented against the AOSP source listing and passes in-repo round trips, but the first real-device run is the moment to confirm everything matches adbd. Until pairing succeeds the daemon does not survive a reboot, and the manual ADB command is the fallback.
+- **Autostart depends on a one-time Wireless-ADB pairing.** After pairing, the daemon comes back on every boot through the `BootReceiver` hook. Before pairing, the daemon has to be started from a PC with the ADB command shown in the Status screen.
 - **App-process death is recoverable but not automatic.** If the app process is killed while the daemon is alive, the in-memory Binder reference is lost; the daemon stays idle until the next ADB run. After the daemon reattaches, the watcher re-applies the current country automatically.
 
 ---

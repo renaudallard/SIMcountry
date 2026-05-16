@@ -111,7 +111,7 @@ fun DaemonBanner(client: SimControlClient) {
             AnimatedVisibility(expanded) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Run this command from a PC with adb (one time per boot in v0.1):",
+                        "Run this command from a PC with adb to start the daemon. Pair Wireless ADB from the Status tab to skip this on future reboots.",
                         color = Color.White,
                         style = MaterialTheme.typography.bodySmall,
                     )

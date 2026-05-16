@@ -76,7 +76,7 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
                 Text("Autostart", style = MaterialTheme.typography.titleMedium)
                 when (val s = autostartState) {
                     is AutostartCoordinator.State.Unpaired -> {
-                        Text("Not paired. The daemon must be started over ADB after every reboot.")
+                        Text("Not paired. Pair once with Wireless ADB and the daemon will come back on every boot.")
                         Button(onClick = onPair) { Text("Pair Wireless ADB") }
                     }
                     is AutostartCoordinator.State.Paired -> {
