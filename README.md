@@ -169,7 +169,7 @@ The daemon, running as shell UID, uses framework permissions tied to that UID (n
 
 ## Status
 
-v0.1.3: functional skeleton with post-review fixes applied, an ISO-keyed rule schema with an E.212 country picker and a Default SIMs card, plus an in-tree Wireless-ADB autostart pipeline (ADB protocol, RSA-2048 key in the legacy ADB format, TLSv1.3 with ALPN, mDNS service discovery, Edwards25519 group arithmetic, SPAKE2 matching BoringSSL's spake25519, and the AES-128-GCM PEER_INFO exchange). Unit tests cover the rule matcher, the country-watcher state machine, the ADB protocol codec, the RSA legacy key serializer, Ed25519 group laws, the AES-GCM stream layer, and SPAKE2 client/server round trips: 47 tests in total. The end-to-end switching and autostart flows have not yet been validated on physical hardware; manual device testing on a Pixel running Android 13+ is mandatory before any release.
+v0.1.4: functional skeleton with post-review fixes applied, an ISO-keyed rule schema with an E.212 country picker and a Default SIMs card, plus an in-tree Wireless-ADB autostart pipeline (ADB protocol, RSA-2048 key in the legacy ADB format, TLSv1.3 with ALPN, mDNS service discovery, Edwards25519 group arithmetic, SPAKE2 matching BoringSSL's spake25519, and the AES-128-GCM PEER_INFO exchange). Unit tests cover the rule matcher, the country-watcher state machine, the ADB protocol codec, the RSA legacy key serializer, Ed25519 group laws, the AES-GCM stream layer, and SPAKE2 client/server round trips: 47 tests in total. The end-to-end switching and autostart flows have not yet been validated on physical hardware; manual device testing on a Pixel running Android 13+ is mandatory before any release.
 
 ---
 

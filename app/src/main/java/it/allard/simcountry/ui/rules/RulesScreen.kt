@@ -64,7 +64,8 @@ import it.allard.simcountry.telephony.SimRegistry
 @Composable
 fun RulesScreen(container: AppContainer, onEdit: (Int?) -> Unit) {
     val doc by container.rulesStore.doc.collectAsState()
-    val sims by container.simRegistry.subs.collectAsState()
+    val allSims by container.simRegistry.subs.collectAsState()
+    val sims = allSims.filter { it.hasIccid }
     val labelByIccid = sims.associateBy({ it.iccid }, { it.label })
 
     Box(Modifier.fillMaxSize()) {

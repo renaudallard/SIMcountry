@@ -46,6 +46,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,6 +60,7 @@ import it.allard.simcountry.data.AppContainer
 @Composable
 fun SimsScreen(container: AppContainer) {
     val sims by container.simRegistry.subs.collectAsState()
+    LaunchedEffect(Unit) { container.simRegistry.refresh() }
     Column(modifier = Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         androidx.compose.foundation.layout.Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -74,15 +76,15 @@ fun SimsScreen(container: AppContainer) {
                 Column(Modifier.padding(16.dp)) {
                     Text("No SIMs known yet.", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        "Connect the daemon and tap refresh. The daemon is required to list inactive eSIM profiles.",
+                        "Grant READ_PHONE_STATE and tap refresh. Inactive eSIM profiles only appear once the daemon is connected.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
             }
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(sims, key = { it.iccid }) { s ->
-                var draft by remember(s.iccid) { mutableStateOf(s.nickname ?: "") }
+            items(sims, key = { if (it.hasIccid) "iccid:${it.iccid}" else "sub:${it.subId}" }) { s ->
+                var draft by remember(s.iccid, s.subId) { mutableStateOf(s.nickname ?: "") }
                 Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
                     Column(Modifier.padding(12.dp)) {
                         Text(s.label, style = MaterialTheme.typography.titleMedium)
@@ -91,21 +93,33 @@ fun SimsScreen(container: AppContainer) {
                                 append(if (s.isActive) "active" else "inactive")
                                 if (s.isEmbedded) append(" / eSIM") else append(" / physical")
                                 if (s.carrierName.isNotBlank()) append(" / ${s.carrierName}")
-                                append(" / iccid ${s.iccid.takeLast(6)}")
+                                if (s.hasIccid) {
+                                    append(" / iccid ${s.iccid.takeLast(6)}")
+                                } else {
+                                    append(" / iccid not visible (start the daemon to see it)")
+                                }
                             },
                             style = MaterialTheme.typography.bodySmall,
                         )
-                        OutlinedTextField(
-                            value = draft,
-                            onValueChange = { draft = it },
-                            label = { Text("Nickname") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                        )
-                        Button(
-                            onClick = { container.simRegistry.setNickname(s.iccid, draft.ifBlank { null }) },
-                            modifier = Modifier.padding(top = 4.dp),
-                        ) { Text("Save nickname") }
+                        if (s.hasIccid) {
+                            OutlinedTextField(
+                                value = draft,
+                                onValueChange = { draft = it },
+                                label = { Text("Nickname") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            )
+                            Button(
+                                onClick = { container.simRegistry.setNickname(s.iccid, draft.ifBlank { null }) },
+                                modifier = Modifier.padding(top = 4.dp),
+                            ) { Text("Save nickname") }
+                        } else {
+                            Text(
+                                "This SIM cannot be referenced in a rule until the daemon exposes its ICCID.",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(top = 8.dp),
+                            )
+                        }
                     }
                 }
             }

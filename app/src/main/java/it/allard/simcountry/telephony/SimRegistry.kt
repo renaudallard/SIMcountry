@@ -30,6 +30,7 @@
 package it.allard.simcountry.telephony
 
 import android.content.Context
+import android.telephony.SubscriptionManager
 import android.util.Log
 import it.allard.simcountry.ipc.SimControlClient
 import it.allard.simcountry.ipc.SubInfo
@@ -61,34 +62,40 @@ class SimRegistry(
         val nickname: String? = null,
     )
 
-    private val file = File(context.filesDir, FILE_NAME)
-    private val tmp = File(context.filesDir, "$FILE_NAME.tmp")
+    private val app = context.applicationContext
+    private val subscriptionManager = app.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE)
+        as SubscriptionManager
+    private val file = File(app.filesDir, FILE_NAME)
+    private val tmp = File(app.filesDir, "$FILE_NAME.tmp")
     private val mutex = Mutex()
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _persisted = MutableStateFlow(load())
-    private val _live = MutableStateFlow<List<SubInfo>>(emptyList())
+    private val _liveLocal = MutableStateFlow<List<SubInfo>>(emptyList())
+    private val _liveDaemon = MutableStateFlow<List<SubInfo>>(emptyList())
 
-    val subs: StateFlow<List<RegisteredSub>> = combine(_persisted, _live) { persisted, live ->
-        val keyedPersisted = persisted.filter { it.iccid.isNotBlank() }
-        val keyedLive = live.filter { it.iccid.isNotBlank() }
-        val byIccid = keyedPersisted.associateBy { it.iccid }.toMutableMap()
-        for (s in keyedLive) {
-            val nick = byIccid[s.iccid]?.nickname
-            byIccid[s.iccid] = Persisted(s.iccid, s.displayName, s.carrierName, s.isEmbedded, nick)
-        }
-        val ids = keyedLive.associateBy { it.iccid }
-        byIccid.values.map { p ->
-            val l = ids[p.iccid]
+    val subs: StateFlow<List<RegisteredSub>> = combine(
+        _persisted,
+        _liveLocal,
+        _liveDaemon,
+    ) { persisted, local, daemon ->
+        // Daemon entries are richer (real ICCID, inactive eSIMs included) so they win
+        // per subscriptionId. The app-side query fills in the active set whenever the
+        // daemon is not connected.
+        val daemonBySubId = daemon.associateBy { it.subId }
+        val merged = (daemon + local.filter { it.subId !in daemonBySubId }).distinctBy { it.subId }
+        val persistedByIccid = persisted.filter { it.iccid.isNotBlank() }.associateBy { it.iccid }
+        merged.map { s ->
+            val nickname = if (s.iccid.isNotBlank()) persistedByIccid[s.iccid]?.nickname else null
             RegisteredSub(
-                iccid = p.iccid,
-                subId = l?.subId,
-                displayName = p.displayName,
-                carrierName = p.carrierName,
-                isEmbedded = p.isEmbedded,
-                isActive = l?.isActive == true,
-                nickname = p.nickname,
+                iccid = s.iccid,
+                subId = s.subId,
+                displayName = s.displayName,
+                carrierName = s.carrierName,
+                isEmbedded = s.isEmbedded,
+                isActive = s.isActive,
+                nickname = nickname,
             )
         }.sortedWith(compareByDescending<RegisteredSub> { it.isActive }.thenBy { it.displayName })
     }.let { flow ->
@@ -99,16 +106,54 @@ class SimRegistry(
 
     fun refresh() {
         scope.launch {
-            val iface = client.iface ?: return@launch
-            val list = runCatching { iface.listAllSubscriptions() }
-                .onFailure { Log.w(TAG, "listAllSubscriptions", it) }
-                .getOrNull() ?: return@launch
-            val keyed = list.filter { it.iccid.isNotBlank() }
-            _live.value = keyed
+            refreshFromSubscriptionManager()
+            refreshFromDaemon()
+        }
+    }
+
+    private fun refreshFromSubscriptionManager() {
+        val list = try {
+            subscriptionManager.activeSubscriptionInfoList ?: emptyList()
+        } catch (se: SecurityException) {
+            Log.w(TAG, "no READ_PHONE_STATE; skipping app-side enumeration", se)
+            return
+        }
+        _liveLocal.value = list.map { si ->
+            SubInfo(
+                subId = si.subscriptionId,
+                iccid = si.iccId?.trim().orEmpty(),
+                carrierName = si.carrierName?.toString().orEmpty(),
+                displayName = si.displayName?.toString().orEmpty(),
+                mcc = si.mccString,
+                mnc = si.mncString,
+                isEmbedded = si.isEmbedded,
+                isActive = true,
+            )
+        }
+        persistKnown(_liveLocal.value)
+    }
+
+    private suspend fun refreshFromDaemon() {
+        val iface = client.iface ?: return
+        val list = runCatching { iface.listAllSubscriptions() }
+            .onFailure { Log.w(TAG, "listAllSubscriptions", it) }
+            .getOrNull() ?: return
+        _liveDaemon.value = list
+        persistKnown(list)
+    }
+
+    private fun persistKnown(list: List<SubInfo>) {
+        // Only keep entries with a real ICCID in the persisted store; rules reference
+        // SIMs by ICCID and entries without one are not addressable from a rule.
+        val identifiable = list.filter { it.iccid.isNotBlank() }
+        if (identifiable.isEmpty()) return
+        scope.launch {
             mutex.withLock {
-                val byIccid = _persisted.value.filter { it.iccid.isNotBlank() }
-                    .associateBy { it.iccid }.toMutableMap()
-                for (s in keyed) {
+                val byIccid = _persisted.value
+                    .filter { it.iccid.isNotBlank() }
+                    .associateBy { it.iccid }
+                    .toMutableMap()
+                for (s in identifiable) {
                     val nick = byIccid[s.iccid]?.nickname
                     byIccid[s.iccid] = Persisted(s.iccid, s.displayName, s.carrierName, s.isEmbedded, nick)
                 }
@@ -156,7 +201,12 @@ class SimRegistry(
         val isActive: Boolean,
         val nickname: String?,
     ) {
-        val label: String get() = nickname?.takeIf { it.isNotBlank() } ?: displayName.ifBlank { carrierName }.ifBlank { iccid.takeLast(6) }
+        val hasIccid: Boolean get() = iccid.isNotBlank()
+        val label: String
+            get() = nickname?.takeIf { it.isNotBlank() }
+                ?: displayName.ifBlank { carrierName }.ifBlank {
+                    if (hasIccid) iccid.takeLast(6) else "subId $subId"
+                }
     }
 
     companion object {

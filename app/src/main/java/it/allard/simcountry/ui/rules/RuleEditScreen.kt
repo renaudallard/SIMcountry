@@ -70,7 +70,8 @@ fun RuleEditScreen(
     onDone: () -> Unit,
 ) {
     val doc by container.rulesStore.doc.collectAsState()
-    val sims by container.simRegistry.subs.collectAsState()
+    val allSims by container.simRegistry.subs.collectAsState()
+    val sims = allSims.filter { it.hasIccid }
     val existing = index?.let { doc.rules.getOrNull(it) }
 
     var iso by remember { mutableStateOf(existing?.iso ?: "") }
