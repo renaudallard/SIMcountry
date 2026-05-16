@@ -93,6 +93,7 @@ object DaemonEntrypoint {
             } catch (_: Exception) {
             }
         }
+        Log.e(TAG, "neither candidate installed: $candidates; pass the target package as arg[0]")
         return APP_PACKAGE
     }
 }
