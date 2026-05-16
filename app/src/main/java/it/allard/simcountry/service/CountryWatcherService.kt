@@ -64,6 +64,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.Executors
 
 class CountryWatcherService : Service() {
 
@@ -72,6 +73,9 @@ class CountryWatcherService : Service() {
     private val callbacks = mutableMapOf<Int, TelephonyCallback>()
     private var tickJob: Job? = null
     private var subsChangedListener: SubscriptionManager.OnSubscriptionsChangedListener? = null
+    private val callbackExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "simcountry-telephony").apply { isDaemon = true }
+    }
 
     private lateinit var app: SimcountryApp
     private lateinit var telephony: TelephonyManager
@@ -98,6 +102,7 @@ class CountryWatcherService : Service() {
         super.onDestroy()
         stopSubscriptionsChangedListener()
         unregisterAllCallbacks()
+        callbackExecutor.shutdown()
         app.container.keyguardGate.stop()
         scope.cancel()
     }
@@ -170,7 +175,7 @@ class CountryWatcherService : Service() {
                 }
             }
             try {
-                perSub.registerTelephonyCallback({ it.run() }, cb)
+                perSub.registerTelephonyCallback(callbackExecutor, cb)
                 callbacks[subId] = cb
             } catch (t: Throwable) {
                 Log.w(TAG, "registerTelephonyCallback failed for subId=$subId", t)
@@ -197,7 +202,7 @@ class CountryWatcherService : Service() {
             }
         }
         try {
-            subs.addOnSubscriptionsChangedListener({ it.run() }, listener)
+            subs.addOnSubscriptionsChangedListener(callbackExecutor, listener)
             subsChangedListener = listener
         } catch (t: Throwable) {
             Log.w(TAG, "addOnSubscriptionsChangedListener failed", t)
