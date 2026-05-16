@@ -190,7 +190,7 @@ UID (notably `MODIFY_PHONE_STATE`).
 
 ## Status
 
-v0.1.1: functional skeleton with post-review fixes applied, plus an
+v0.1.2: functional skeleton with post-review fixes applied, plus an
 ISO-keyed rule schema, an E.212 country picker, and a Default SIMs card.
 Unit tests cover the rule matcher (8 cases including specificity scoring)
 and country-watcher state machine. The full switching flow has not yet
