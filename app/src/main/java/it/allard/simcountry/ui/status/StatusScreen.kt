@@ -1,0 +1,98 @@
+/*
+ * Copyright (c) 2026 Renaud Allard <renaud@allard.it>
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGES.
+ */
+
+package it.allard.simcountry.ui.status
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import it.allard.simcountry.data.AppContainer
+import it.allard.simcountry.ui.DaemonBanner
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+@Composable
+fun StatusScreen(container: AppContainer) {
+    val client = container.simControlClient
+    val rulesDoc by container.rulesStore.doc.collectAsState()
+    val suppressions by container.overrideDetector.suppressedUntil.collectAsState()
+    val scope = rememberCoroutineScope()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        DaemonBanner(client)
+
+        Card(modifier = Modifier.padding(horizontal = 8.dp)) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Policy", style = MaterialTheme.typography.titleMedium)
+                Text("stability: ${rulesDoc.policy.stabilitySec}s")
+                Text("reverse hysteresis: ${rulesDoc.policy.reverseHysteresisSec}s")
+                Text("min switch interval: ${rulesDoc.policy.minSwitchIntervalSec}s")
+                Text("override suppression: ${rulesDoc.policy.overrideSuppressionSec}s")
+            }
+        }
+
+        if (suppressions.isNotEmpty()) {
+            Card(modifier = Modifier.padding(horizontal = 8.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Suppressed countries", style = MaterialTheme.typography.titleMedium)
+                    val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                    suppressions.forEach { (mcc, until) ->
+                        Column {
+                            Text("MCC $mcc until ${fmt.format(Date(until))}")
+                            TextButton(onClick = {
+                                scope.launch { container.overrideDetector.clearSuppression(mcc) }
+                            }) { Text("Clear") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
