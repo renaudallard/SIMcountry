@@ -15,6 +15,12 @@ Both physical SIMs and eSIMs are supported, including eSIM profiles that are
 currently inactive; the app will request activation before switching the
 default to them.
 
+Rules are keyed by ISO 3166-1 alpha-2 country code (a single rule for "US"
+covers all seven United States MCCs). Optional MCC and MNC narrowing
+fields let you pin a rule to one specific MCC inside a country or to a
+single operator. A separate "Default SIMs" card at the top of the Rules
+tab sets the SIMs to use everywhere no country override matches.
+
 ## Privilege model
 
 Changing the default SIM via `SubscriptionManager.setDefault*SubId` and
@@ -56,9 +62,12 @@ For a release build, replace `it.allard.simcountry.debug` with
    version.
 5. Open the SIMs tab and tap refresh: the daemon enumerates all
    subscriptions, including inactive eSIM profiles.
-6. Open the Rules tab and add at least one rule. MCC values are 3 digits
-   (Switzerland 228, France 208, Germany 262, Italy 222, UK 234, USA 310,
-   etc.).
+6. Open the Rules tab. The top "Default SIMs" card sets the SIMs to use
+   everywhere no country override applies. Tap the `+` button to add a
+   country override: a searchable sheet lists every assigned country.
+   For multi-MCC countries (USA, India, ...) an extra dropdown lets you
+   restrict the rule to one specific MCC, and an MNC field narrows it
+   further to a single operator.
 
 ## How a switch happens
 
@@ -76,9 +85,12 @@ For a release build, replace `it.allard.simcountry.debug` with
    - switching back to a country we just left requires
      `reverseHysteresisSec` (default 120s)
    - at most one switch per `minSwitchIntervalSec` (default 300s)
-4. When the watcher settles on a new country, `RuleMatcher` finds the rule
-   (MCC+MNC exact wins over MCC-only) and `CountryWatcherService` invokes
-   the daemon for each aspect listed in the rule.
+4. When the watcher settles on a new country, `RuleMatcher` resolves the
+   registered MCC to its ISO country code and picks the most specific
+   rule that still applies: ISO+MCC+MNC wins over ISO+MCC, then
+   ISO+MNC, then the bare ISO-only rule. Aspects left unset on the
+   matched rule fall back to `RulesDoc.defaults`. `CountryWatcherService`
+   then invokes the daemon for each aspect that has a SIM assigned.
 5. `OverrideDetector` records what we applied. If the default data SubId is
    later changed without our involvement, the MCC is suppressed for
    `overrideSuppressionSec` (default 1h) and surfaces an undo in Status. Only
@@ -117,10 +129,13 @@ app/src/main/aidl/it/allard/simcountry/ipc/
 app/src/main/java/it/allard/simcountry/
   daemon/                runs as shell UID; calls hidden telephony APIs
   ipc/                   ContentProvider handover, client wrapper
-  telephony/             CountryWatcher, SimRegistry, OverrideDetector, KeyguardGate
-  rules/                 CountryRule, RulesStore (JSON), RuleMatcher
+  telephony/             CountryWatcher, SimRegistry, OverrideDetector,
+                         KeyguardGate, Mcc (E.212 country dataset)
+  rules/                 CountryRule (ISO-keyed), RulesStore (JSON, with
+                         v1 -> v2 migration), RuleMatcher
   service/               CountryWatcherService (foreground), BootReceiver
-  ui/                    Compose screens (Status, Rules, SIMs)
+  ui/                    Compose screens; rules tab hosts the Defaults
+                         card, country picker, and rule editor
   data/                  AppContainer (manual DI)
 ```
 
@@ -175,7 +190,9 @@ UID (notably `MODIFY_PHONE_STATE`).
 
 ## Status
 
-v0.1.1: functional skeleton with post-review fixes applied. Unit tests cover the rule matcher and
-country-watcher state machine. The full switching flow has not yet been
-validated on physical hardware; manual device testing on a Pixel running
-Android 13+ is mandatory before any release.
+v0.1.1: functional skeleton with post-review fixes applied, plus an
+ISO-keyed rule schema, an E.212 country picker, and a Default SIMs card.
+Unit tests cover the rule matcher (8 cases including specificity scoring)
+and country-watcher state machine. The full switching flow has not yet
+been validated on physical hardware; manual device testing on a Pixel
+running Android 13+ is mandatory before any release.
