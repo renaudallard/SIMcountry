@@ -92,9 +92,15 @@ class HiddenApi(private val context: Context) {
         val target = listAllSubscriptions().firstOrNull { it.iccid == iccid && it.isEmbedded }
             ?: throw IllegalArgumentException("no eSIM profile with iccid=$iccid")
         if (target.isActive) return
-        val intent = Intent(ACTION_ESIM_SWITCH_RESULT).setPackage(context.packageName)
+        val shellCtx = try {
+            context.createPackageContext("com.android.shell", 0)
+        } catch (t: Throwable) {
+            Log.w(TAG, "createPackageContext(shell) failed; falling back to system context", t)
+            context
+        }
+        val intent = Intent(ACTION_ESIM_SWITCH_RESULT).setPackage(shellCtx.packageName)
         val pi = PendingIntent.getBroadcast(
-            context,
+            shellCtx,
             target.subId,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
