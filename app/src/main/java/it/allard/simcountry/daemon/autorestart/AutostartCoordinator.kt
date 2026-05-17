@@ -152,8 +152,7 @@ class AutostartCoordinator(context: Context) {
     }
 
     private fun saveAndPublish(next: State) {
-        _state.value = next
-        runCatching {
+        val written = runCatching {
             val payload = json.encodeToString(SerializableState.serializer(), next.toSerializable())
             val tmp = File(app.filesDir, "$STATE_FILE.tmp")
             tmp.writeText(payload)
@@ -161,7 +160,8 @@ class AutostartCoordinator(context: Context) {
                 tmp.delete()
                 error("rename ${tmp.name} -> ${stateFile.name} failed")
             }
-        }.onFailure { Log.w(TAG, "stateFile write failed", it) }
+        }.onFailure { Log.w(TAG, "stateFile write failed", it) }.isSuccess
+        if (written) _state.value = next
     }
 
     private fun loadState(): State = try {
