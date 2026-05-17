@@ -148,17 +148,16 @@ class AutostartCoordinator(context: Context) {
         private const val CONNECT_DISCOVER_MS = 8_000L
 
         fun daemonStartCommand(packageId: String): String {
-            // Detach via a backgrounded subshell so the daemon is reparented
-            // to init when adbd closes the shell stream. If `pm path` finds
-            // nothing (app not installed in this user, mis-typed id, ...)
-            // exit with a distinctive non-zero status so the failure is
-            // visible in executeShell's stdout/exit instead of silently
-            // running an exec with an empty class path.
+            // Resolve the APK path in the outer shell so the failure case
+            // surfaces in the WRTE stream that AdbConnection.executeShell
+            // returns. Only the actual daemon invocation is backgrounded
+            // (with its own stdout/stderr to /dev/null so adbd can close
+            // the shell stream cleanly).
             val entry = "it.allard.simcountry.daemon.DaemonEntrypoint"
-            return """(nohup sh -c 'APK=$(pm path $packageId | sed "s/^package://;1q"); """ +
-                """[ -z "${'$'}APK" ] && { echo "no apk for $packageId" >&2; exit 90; }; """ +
-                """exec /system/bin/app_process -Djava.class.path="${'$'}APK" /system/bin """ +
-                """--nice-name=simcountry-daemon $entry $packageId' </dev/null >/dev/null 2>&1 &)"""
+            return """APK=$(pm path $packageId | sed "s/^package://;1q"); """ +
+                """[ -n "${'$'}APK" ] || { echo "no apk for $packageId" >&2; exit 90; }; """ +
+                """(nohup /system/bin/app_process -Djava.class.path="${'$'}APK" /system/bin """ +
+                """--nice-name=simcountry-daemon $entry $packageId </dev/null >/dev/null 2>&1 &)"""
         }
     }
 }
