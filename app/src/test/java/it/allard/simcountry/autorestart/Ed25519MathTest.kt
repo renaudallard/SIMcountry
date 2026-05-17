@@ -34,6 +34,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.math.BigInteger
 
@@ -109,6 +110,29 @@ class Ed25519MathTest {
         val tooLarge = ByteArray(32) { 0xFF.toByte() }
         tooLarge[31] = 0x7F // clear sign bit, leaves y = 2^255 - 1 > p
         assertNull(Ed25519Math.decode(tooLarge))
+    }
+
+    @Test fun decodeRejectsOffCurvePoint() {
+        // The y > p test above only exercises the bounds check at the top
+        // of decode. The curve-membership check lives further down, in
+        // recoverX, and only fires when (y^2-1)/(d*y^2+1) is a quadratic
+        // non-residue mod p. Sweep small y values to find one that
+        // satisfies y < p but has no x solving the curve equation, then
+        // verify the decoder rejects both possible sign bits.
+        var offCurveY = -1
+        for (yVal in 2..100) {
+            val bytes = ByteArray(32).also { it[0] = yVal.toByte() }
+            if (Ed25519Math.decode(bytes) == null) {
+                offCurveY = yVal
+                break
+            }
+        }
+        assertTrue("expected at least one off-curve y in [2,100]", offCurveY > 0)
+        val withSignBit = ByteArray(32).also {
+            it[0] = offCurveY.toByte()
+            it[31] = 0x80.toByte()
+        }
+        assertNull(Ed25519Math.decode(withSignBit))
     }
 
     @Test fun littleEndianFromBytesRoundTrips() {
