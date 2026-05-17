@@ -1,4 +1,6 @@
-<h1 align="center">SIMcountry</h1>
+<p align="center">
+  <img src="branding/readme_banner_hero.png" alt="SIMcountry" />
+</p>
 
 <p align="center">
   Per-country default SIM switching for Android, with an in-tree Shizuku-style daemon.<br/>
