@@ -96,8 +96,15 @@ class RuleMatcherTest {
     }
 
     @Test fun defaultsFillUnsetAspects() {
-        val m = RuleMatcher.match(doc, "228", "any")!!
+        val localDoc = RulesDoc(
+            rules = listOf(
+                CountryRule(iso = "CH", aspects = AspectRules(data = ch)),
+            ),
+            defaults = AspectRules(voice = eu, sms = verizon),
+        )
+        val m = RuleMatcher.match(localDoc, "228", null)!!
         assertEquals(ch, m.data)
-        assertNull(m.sms)
+        assertEquals(eu, m.voice)
+        assertEquals(verizon, m.sms)
     }
 }
