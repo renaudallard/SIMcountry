@@ -149,9 +149,14 @@ class AutostartCoordinator(context: Context) {
 
         fun daemonStartCommand(packageId: String): String {
             // Detach via a backgrounded subshell so the daemon is reparented
-            // to init when adbd closes the shell stream.
+            // to init when adbd closes the shell stream. If `pm path` finds
+            // nothing (app not installed in this user, mis-typed id, ...)
+            // exit with a distinctive non-zero status so the failure is
+            // visible in executeShell's stdout/exit instead of silently
+            // running an exec with an empty class path.
             val entry = "it.allard.simcountry.daemon.DaemonEntrypoint"
             return """(nohup sh -c 'APK=$(pm path $packageId | sed "s/^package://;1q"); """ +
+                """[ -z "${'$'}APK" ] && { echo "no apk for $packageId" >&2; exit 90; }; """ +
                 """exec /system/bin/app_process -Djava.class.path="${'$'}APK" /system/bin """ +
                 """--nice-name=simcountry-daemon $entry $packageId' </dev/null >/dev/null 2>&1 &)"""
         }
