@@ -33,7 +33,6 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -105,6 +104,11 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
                         }) { Text("Reconnect daemon now") }
                         TextButton(onClick = onPair) { Text("Re-pair") }
                         TextButton(onClick = { confirmForget = true }) { Text("Forget pairing") }
+                        TextButton(onClick = {
+                            val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            runCatching { context.startActivity(intent) }
+                        }) { Text("Open Developer options") }
                     }
                 }
             }
@@ -157,14 +161,7 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
                 }) { Text("Forget") }
             },
             dismissButton = {
-                Row {
-                    TextButton(onClick = {
-                        val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        runCatching { context.startActivity(intent) }
-                    }) { Text("Open Developer options") }
-                    TextButton(onClick = { confirmForget = false }) { Text("Cancel") }
-                }
+                TextButton(onClick = { confirmForget = false }) { Text("Cancel") }
             },
         )
     }
