@@ -52,7 +52,6 @@ class MainActivity : ComponentActivity() {
         requestRuntimePermissionsIfNeeded()
         val app = application as SimcountryApp
         CountryWatcherService.start(this)
-        app.container.simRegistry.refresh()
         setContent {
             SimcountryTheme { AppNav(container = app.container) }
         }
