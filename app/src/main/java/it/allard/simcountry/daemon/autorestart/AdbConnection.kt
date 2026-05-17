@@ -172,8 +172,9 @@ class AdbConnection(
         writePacket(socket.outputStream, AdbProtocol.CMD_OPEN, OUR_LOCAL_ID, 0, payload)
         val okay = readPacket(socket.inputStream)
         if (okay.command != AdbProtocol.CMD_OKAY) {
+            val reason = String(okay.payload, Charsets.UTF_8).trim().ifBlank { "no reason given" }
             throw ProtocolException(
-                "shell open rejected (${AdbProtocol.nameOf(okay.command)})",
+                "shell open rejected (${AdbProtocol.nameOf(okay.command)}): $reason",
             )
         }
         if (okay.arg1 != OUR_LOCAL_ID) {
