@@ -116,10 +116,12 @@ class AdbRsaKey internal constructor(
                 privTmp.writeBytes(priv.encoded)
                 pubTmp.writeBytes(pub.encoded)
                 if (!pubTmp.renameTo(pubFile)) {
-                    pubFile.writeBytes(pubTmp.readBytes()); pubTmp.delete()
+                    pubTmp.delete(); privTmp.delete()
+                    error("rename ${pubTmp.name} -> ${pubFile.name} failed")
                 }
                 if (!privTmp.renameTo(privFile)) {
-                    privFile.writeBytes(privTmp.readBytes()); privTmp.delete()
+                    privTmp.delete()
+                    error("rename ${privTmp.name} -> ${privFile.name} failed")
                 }
                 AdbRsaKey(priv, pub, USER_HOST)
             }

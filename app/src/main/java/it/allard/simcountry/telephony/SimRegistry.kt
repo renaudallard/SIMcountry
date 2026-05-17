@@ -186,8 +186,8 @@ class SimRegistry(
         runCatching {
             tmp.writeText(json.encodeToString(ListSerializer(Persisted.serializer()), list))
             if (!tmp.renameTo(file)) {
-                file.writeText(tmp.readText())
                 tmp.delete()
+                error("rename ${tmp.name} -> ${file.name} failed")
             }
         }.onFailure { Log.e(TAG, "save failed", it) }
     }

@@ -114,8 +114,8 @@ class RulesStore(context: Context) {
                 runCatching {
                     tmp.writeText(json.encodeToString(RulesDoc.serializer(), next))
                     if (!tmp.renameTo(file)) {
-                        file.writeText(tmp.readText())
                         tmp.delete()
+                        error("rename ${tmp.name} -> ${file.name} failed")
                     }
                 }.onFailure { Log.e(TAG, "save failed", it) }
             }
