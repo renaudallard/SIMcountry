@@ -31,7 +31,6 @@ package it.allard.simcountry.daemon
 
 import android.content.Context
 import android.os.Process
-import android.util.Log
 import it.allard.simcountry.BuildConfig
 import it.allard.simcountry.ipc.ISimControl
 import it.allard.simcountry.ipc.SubInfo
@@ -46,12 +45,8 @@ class SimControlServer(
 
     override fun pid(): Long = Process.myPid().toLong()
 
-    override fun listAllSubscriptions(): MutableList<SubInfo> = try {
+    override fun listAllSubscriptions(): MutableList<SubInfo> =
         api.listAllSubscriptions().toMutableList()
-    } catch (t: Throwable) {
-        Log.e(TAG, "listAllSubscriptions", t)
-        mutableListOf()
-    }
 
     override fun getDefaultDataSubId(): Int = api.getDefaultDataSubId()
     override fun getDefaultVoiceSubId(): Int = api.getDefaultVoiceSubId()
@@ -71,9 +66,5 @@ class SimControlServer(
 
     override fun activateEsimByIccid(iccid: String) {
         api.activateEsimByIccid(iccid)
-    }
-
-    companion object {
-        private const val TAG = "SimControlServer"
     }
 }
