@@ -31,6 +31,7 @@ package it.allard.simcountry.daemon.autorestart
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -62,7 +63,7 @@ class AutostartCoordinator(context: Context) {
     val state: StateFlow<State> = _state.asStateFlow()
 
     suspend fun pair(pairingCode: String): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val port = AdbMdns.findPort(app, AdbMdns.SERVICE_TYPE_PAIRING, PAIR_DISCOVER_MS)
                 ?: error("Could not find ADB pairing endpoint. Enable Wireless Debugging and tap \"Pair device with pairing code\".")
             val pairing = AdbPairing(key, pairingCode)
@@ -70,11 +71,16 @@ class AutostartCoordinator(context: Context) {
             val now = System.currentTimeMillis()
             val next = State.Paired(pairedAt = now, lastConnectAt = null, lastError = null)
             saveAndPublish(next)
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            Result.failure(t)
         }
     }
 
     suspend fun reconnectDaemon(): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val current = _state.value
             if (current !is State.Paired) error("Device not paired with SIMcountry yet.")
             val port = AdbMdns.findPort(app, AdbMdns.SERVICE_TYPE_CONNECT, CONNECT_DISCOVER_MS)
@@ -84,13 +90,16 @@ class AutostartCoordinator(context: Context) {
             val output = connection.executeShell(command)
             val now = System.currentTimeMillis()
             saveAndPublish(current.copy(lastConnectAt = now, lastError = null))
-            output
-        }.onFailure { t ->
+            Result.success(output)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
             Log.w(TAG, "reconnectDaemon failed", t)
             val current = _state.value
             if (current is State.Paired) {
                 saveAndPublish(current.copy(lastError = t.message))
             }
+            Result.failure(t)
         }
     }
 
