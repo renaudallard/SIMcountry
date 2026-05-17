@@ -147,6 +147,7 @@ app/src/main/java/it/allard/simcountry/
 | :--- | :--- | :--- |
 | `READ_PHONE_STATE` | runtime | observe service state and registered network |
 | `POST_NOTIFICATIONS` | runtime | foreground-service notification |
+| `INTERNET` | normal | open loopback TCP sockets to `127.0.0.1` for the Wireless-ADB autostart handshake |
 | `RECEIVE_BOOT_COMPLETED` | normal | restart the watcher after reboot |
 | `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_SPECIAL_USE` | normal | host the country watcher |
 | `QUERY_ALL_PACKAGES` | debug-only | convenience for daemon-target lookup |
