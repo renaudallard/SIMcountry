@@ -30,13 +30,13 @@
 package it.allard.simcountry.telephony
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -45,9 +45,9 @@ import java.io.File
 class OverrideDetector(
     context: Context,
     private val now: () -> Long = System::currentTimeMillis,
+    private val elapsed: () -> Long = SystemClock::elapsedRealtime,
 ) {
-    @Serializable
-    private data class Snapshot(val mcc: String, val data: Int, val voice: Int, val sms: Int, val at: Long)
+    private data class Snapshot(val mcc: String, val data: Int, val voice: Int, val sms: Int, val sinceBoot: Long)
 
     private val file = File(context.filesDir, FILE_NAME)
     private val mutex = Mutex()
@@ -58,7 +58,7 @@ class OverrideDetector(
     val suppressedUntil: StateFlow<Map<String, Long>> = _suppressedUntil.asStateFlow()
 
     fun recordOurSwitch(mcc: String, data: Int, voice: Int, sms: Int) {
-        lastApplied = Snapshot(mcc, data, voice, sms, now())
+        lastApplied = Snapshot(mcc, data, voice, sms, elapsed())
     }
 
     suspend fun detectAndMaybeSuppress(
@@ -75,7 +75,7 @@ class OverrideDetector(
                 (applied.voice != -1 && applied.voice != currentVoice) ||
                 (applied.sms != -1 && applied.sms != currentSms)
         if (!mismatch) return false
-        val sinceSwitch = now() - applied.at
+        val sinceSwitch = elapsed() - applied.sinceBoot
         if (sinceSwitch < SETTLE_GRACE_MS) return false
         mutex.withLock {
             val next = _suppressedUntil.value.toMutableMap()
