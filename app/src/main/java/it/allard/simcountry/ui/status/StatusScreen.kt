@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -43,7 +44,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import it.allard.simcountry.daemon.autorestart.AutostartCoordinator
@@ -61,6 +65,7 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
     val suppressions by container.overrideDetector.suppressedUntil.collectAsState()
     val autostartState by container.autostart.state.collectAsState()
     val scope = rememberCoroutineScope()
+    var confirmForget by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -88,6 +93,7 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
                             scope.launch { container.autostart.reconnectDaemon() }
                         }) { Text("Reconnect daemon now") }
                         TextButton(onClick = onPair) { Text("Re-pair") }
+                        TextButton(onClick = { confirmForget = true }) { Text("Forget pairing") }
                     }
                 }
             }
@@ -119,5 +125,29 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (confirmForget) {
+        AlertDialog(
+            onDismissRequest = { confirmForget = false },
+            title = { Text("Forget pairing?") },
+            text = {
+                Text(
+                    "The daemon's authentication key will be deleted and a fresh one generated. " +
+                        "You'll need to re-pair Wireless ADB before autostart works again. " +
+                        "The device still trusts the old key in its Wireless Debugging list; " +
+                        "open Developer options to revoke it manually if you want a full cleanup.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmForget = false
+                    scope.launch { container.autostart.forgetPairing() }
+                }) { Text("Forget") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmForget = false }) { Text("Cancel") }
+            },
+        )
     }
 }

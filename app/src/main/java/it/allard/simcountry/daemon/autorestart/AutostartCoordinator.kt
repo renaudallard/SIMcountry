@@ -59,7 +59,9 @@ class AutostartCoordinator(context: Context) {
     private val app = context.applicationContext
     private val stateFile = File(app.filesDir, STATE_FILE)
     private val json = Json { prettyPrint = false; ignoreUnknownKeys = true; encodeDefaults = true }
-    private val key: AdbRsaKey = AdbRsaKey.loadOrCreate(app)
+    // var so forgetPairing() can swap in a freshly-generated key after the
+    // old keystore files are deleted.
+    private var key: AdbRsaKey = AdbRsaKey.loadOrCreate(app)
 
     private val _state = MutableStateFlow(loadState())
     val state: StateFlow<State> = _state.asStateFlow()
@@ -88,6 +90,33 @@ class AutostartCoordinator(context: Context) {
 
     suspend fun reconnectDaemon(): Result<String> = withContext(Dispatchers.IO) {
         operationLock.withLock { runReconnect() }
+    }
+
+    /**
+     * Delete the daemon RSA key, regenerate a fresh keypair, and reset the
+     * persisted state to Unpaired. The device's adbd still trusts the old
+     * key in its `/data/misc/adb/adb_keys` list; we cannot purge it from a
+     * non-system app, so the UI should tell the user to revoke pairings
+     * from Developer Options if they want a full cleanup.
+     */
+    suspend fun forgetPairing(): Result<Unit> = withContext(Dispatchers.IO) {
+        operationLock.withLock { runForget() }
+    }
+
+    private suspend fun runForget(): Result<Unit> {
+        try {
+            File(app.filesDir, "adb_rsa.pkcs8").delete()
+            File(app.filesDir, "adb_rsa.x509").delete()
+            // loadOrCreate now sees the files gone and generates a fresh keypair.
+            key = AdbRsaKey.loadOrCreate(app)
+            saveAndPublish(State.Unpaired)
+            return Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            Log.w(TAG, "forgetPairing failed", t)
+            return Result.failure(t)
+        }
     }
 
     private suspend fun runReconnect(): Result<String> {

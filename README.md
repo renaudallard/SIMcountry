@@ -49,6 +49,8 @@ After the one-time ADB command starts the daemon for the first time, the app can
 2. In SIMcountry's **Status** tab, tap **Pair Wireless ADB** and type the six-digit code from the dialog.
 3. From then on, the `BootReceiver` runs the same daemon-start command over Wireless ADB on every `BOOT_COMPLETED`, presenting the RSA key authorised during pairing.
 
+To undo the pairing, tap **Forget pairing** in the Status tab; SIMcountry deletes its RSA key and generates a new one. The device itself still trusts the old key in its Wireless Debugging list (Android does not expose a per-key revoke to non-system apps), so open Developer options and tap **Revoke pairings** if you also want to clean up the device side.
+
 The pairing handshake follows AOSP's `pairing_connection` wire format: TLSv1.3 with ALPN `adb`, SPAKE2 over Ed25519 with the M and N constants from BoringSSL, AES-128-GCM-encrypted PeerInfo.
 
 ---
