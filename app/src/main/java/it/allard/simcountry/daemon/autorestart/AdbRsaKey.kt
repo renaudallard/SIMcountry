@@ -108,8 +108,19 @@ class AdbRsaKey internal constructor(
                 val pair = gen.generateKeyPair()
                 val priv = pair.private as RSAPrivateKey
                 val pub = pair.public as RSAPublicKey
-                privFile.writeBytes(priv.encoded)
-                pubFile.writeBytes(pub.encoded)
+                // Atomic-ish two-file save: write both temp files first, then
+                // rename them into place so a crash between the writes cannot
+                // leave only one of the pair on disk.
+                val privTmp = File(context.filesDir, "$PRIVATE_FILE.tmp")
+                val pubTmp = File(context.filesDir, "$PUBLIC_FILE.tmp")
+                privTmp.writeBytes(priv.encoded)
+                pubTmp.writeBytes(pub.encoded)
+                if (!pubTmp.renameTo(pubFile)) {
+                    pubFile.writeBytes(pubTmp.readBytes()); pubTmp.delete()
+                }
+                if (!privTmp.renameTo(privFile)) {
+                    privFile.writeBytes(privTmp.readBytes()); privTmp.delete()
+                }
                 AdbRsaKey(priv, pub, USER_HOST)
             }
         }
