@@ -155,6 +155,7 @@ The daemon, running as shell UID, uses framework permissions tied to that UID (n
 
 - **eSIM profile activation** uses `EuiccManager.switchToSubscription`. The required callback `PendingIntent` is minted on a `com.android.shell` package context, so the call goes through on devices where the shell UID can mint PendingIntents for that package. On devices where the shell UID is not granted `WRITE_EMBEDDED_SUBSCRIPTIONS` the call is still rejected with `SecurityException`; the app then switches the default to whatever profile is already active and logs the failure.
 - **Autostart depends on a one-time Wireless-ADB pairing.** After pairing, the daemon comes back on every boot through the `BootReceiver` hook. Before pairing, the daemon has to be started from a PC with the ADB command shown in the Status screen.
+- **If adbd ever forgets our paired key**, the connect path falls through to the legacy AUTH dance and we send `AUTH(RSAPUBLICKEY)`. adbd then shows an **Always allow from this computer?** dialog *on the device* and waits for the user to tap **Allow** before completing the handshake. From boot that prompt won't be answered, so the autostart silently fails. Re-pair from the **Pair Wireless ADB** screen and the next boot will work again.
 - **App-process death is recoverable but not automatic.** If the app process is killed while the daemon is alive, the in-memory Binder reference is lost; the daemon stays idle until the next ADB run. After the daemon reattaches, the watcher re-applies the current country automatically.
 
 ---
