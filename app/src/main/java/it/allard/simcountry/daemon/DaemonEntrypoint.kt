@@ -32,6 +32,7 @@ package it.allard.simcountry.daemon
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import android.util.Log
@@ -42,6 +43,8 @@ object DaemonEntrypoint {
 
     private const val TAG = "SimcountryDaemon"
     private const val APP_PACKAGE = "it.allard.simcountry"
+    private const val KEEPALIVE_INTERVAL_MS: Long = 10_000
+    private const val KEEPALIVE_MAX_FAILURES: Int = 10
 
     @JvmStatic
     @Suppress("DEPRECATION")
@@ -74,7 +77,47 @@ object DaemonEntrypoint {
         }
         Log.i(TAG, "attached to $authority")
 
+        scheduleKeepalive(context, uri, extras)
+
         Looper.loop()
+    }
+
+    /**
+     * Periodically re-push our Binder into the app's [SimControlProvider].
+     * adbd keeps us alive, but the app's process can die at any moment for
+     * memory pressure or a user force-stop; without a re-push the new app
+     * process has no path back to us. Calling attachShell touches the
+     * provider, which makes the platform spin the app process back up if
+     * needed, so this also acts as a wake-up.
+     *
+     * If the call fails repeatedly we assume the app has been uninstalled
+     * (the provider authority no longer resolves) and tear ourselves down.
+     */
+    private fun scheduleKeepalive(context: Context, uri: Uri, extras: Bundle) {
+        val handler = Handler(Looper.getMainLooper())
+        var consecutiveFailures = 0
+        val runnable = object : Runnable {
+            override fun run() {
+                val ok = try {
+                    context.contentResolver.call(uri, SimControlProvider.METHOD_ATTACH, null, extras)
+                        ?.getBoolean("ok") == true
+                } catch (t: Throwable) {
+                    Log.w(TAG, "keepalive attachShell threw", t)
+                    false
+                }
+                if (ok) {
+                    consecutiveFailures = 0
+                } else {
+                    consecutiveFailures++
+                    if (consecutiveFailures >= KEEPALIVE_MAX_FAILURES) {
+                        Log.e(TAG, "$KEEPALIVE_MAX_FAILURES consecutive keepalive failures; daemon exiting")
+                        exitProcess(6)
+                    }
+                }
+                handler.postDelayed(this, KEEPALIVE_INTERVAL_MS)
+            }
+        }
+        handler.postDelayed(runnable, KEEPALIVE_INTERVAL_MS)
     }
 
     private fun bootstrapContext(): Context {
