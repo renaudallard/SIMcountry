@@ -50,6 +50,7 @@ class OverrideDetector(
     private data class Snapshot(val mcc: String, val data: Int, val voice: Int, val sms: Int, val sinceBoot: Long)
 
     private val file = File(context.filesDir, FILE_NAME)
+    private val tmp = File(context.filesDir, "$FILE_NAME.tmp")
     private val mutex = Mutex()
     private val json = Json { prettyPrint = false; ignoreUnknownKeys = true }
     private var lastApplied: Snapshot? = null
@@ -110,8 +111,13 @@ class OverrideDetector(
     }
 
     private fun saveSuppressions(map: Map<String, Long>) {
-        runCatching { file.writeText(json.encodeToString(MapSerializer(String.serializer(), Long.serializer()), map)) }
-            .onFailure { Log.w(TAG, "saveSuppressions failed", it) }
+        runCatching {
+            tmp.writeText(json.encodeToString(MapSerializer(String.serializer(), Long.serializer()), map))
+            if (!tmp.renameTo(file)) {
+                tmp.delete()
+                error("rename ${tmp.name} -> ${file.name} failed")
+            }
+        }.onFailure { Log.w(TAG, "saveSuppressions failed", it) }
     }
 
     companion object {
