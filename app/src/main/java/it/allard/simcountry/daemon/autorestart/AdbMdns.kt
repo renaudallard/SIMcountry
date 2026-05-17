@@ -65,17 +65,6 @@ object AdbMdns {
         val nsd = context.getSystemService(Context.NSD_SERVICE) as NsdManager
         val portChannel = Channel<Int>(Channel.CONFLATED)
 
-        val resolveListener = object : NsdManager.ResolveListener {
-            override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
-                Log.w(TAG, "resolve failed for ${info.serviceName}: $errorCode")
-            }
-
-            override fun onServiceResolved(info: NsdServiceInfo) {
-                Log.i(TAG, "resolved ${info.serviceName} -> ${info.host}:${info.port}")
-                portChannel.trySend(info.port)
-            }
-        }
-
         val discoveryListener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(s: String) {}
             override fun onDiscoveryStopped(s: String) {}
@@ -88,6 +77,19 @@ object AdbMdns {
 
             override fun onServiceFound(info: NsdServiceInfo) {
                 Log.i(TAG, "found ${info.serviceName} of type ${info.serviceType}")
+                // NsdManager.resolveService requires a fresh listener per
+                // call when multiple resolves are in flight, so allocate one
+                // for each match.
+                val resolveListener = object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(failed: NsdServiceInfo, errorCode: Int) {
+                        Log.w(TAG, "resolve failed for ${failed.serviceName}: $errorCode")
+                    }
+
+                    override fun onServiceResolved(resolved: NsdServiceInfo) {
+                        Log.i(TAG, "resolved ${resolved.serviceName} -> ${resolved.host}:${resolved.port}")
+                        portChannel.trySend(resolved.port)
+                    }
+                }
                 try {
                     nsd.resolveService(info, resolveListener)
                 } catch (t: Throwable) {
