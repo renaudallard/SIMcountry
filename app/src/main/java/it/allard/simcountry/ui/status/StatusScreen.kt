@@ -82,6 +82,12 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
                 when (val s = autostartState) {
                     is AutostartCoordinator.State.Unpaired -> {
                         Text("Not paired. Pair once with Wireless ADB and the daemon will come back on every boot.")
+                        if (client.state.collectAsState().value is it.allard.simcountry.ipc.SimControlClient.State.Connected) {
+                            Text(
+                                "A previously started daemon is still attached for this session. It will stop at the next reboot unless you pair again.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                         Button(onClick = onPair) { Text("Pair Wireless ADB") }
                     }
                     is AutostartCoordinator.State.Paired -> {
