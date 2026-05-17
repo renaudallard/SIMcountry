@@ -36,6 +36,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -61,8 +63,13 @@ class AutostartCoordinator(context: Context) {
 
     private val _state = MutableStateFlow(loadState())
     val state: StateFlow<State> = _state.asStateFlow()
+    private val operationLock = Mutex()
 
     suspend fun pair(pairingCode: String): Result<Unit> = withContext(Dispatchers.IO) {
+        operationLock.withLock { runPair(pairingCode) }
+    }
+
+    private suspend fun runPair(pairingCode: String): Result<Unit> {
         try {
             val port = AdbMdns.findPort(app, AdbMdns.SERVICE_TYPE_PAIRING, PAIR_DISCOVER_MS)
                 ?: error("Could not find ADB pairing endpoint. Enable Wireless Debugging and tap \"Pair device with pairing code\".")
@@ -71,15 +78,19 @@ class AutostartCoordinator(context: Context) {
             val now = System.currentTimeMillis()
             val next = State.Paired(pairedAt = now, lastConnectAt = null, lastError = null)
             saveAndPublish(next)
-            Result.success(Unit)
+            return Result.success(Unit)
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
-            Result.failure(t)
+            return Result.failure(t)
         }
     }
 
     suspend fun reconnectDaemon(): Result<String> = withContext(Dispatchers.IO) {
+        operationLock.withLock { runReconnect() }
+    }
+
+    private suspend fun runReconnect(): Result<String> {
         try {
             val current = _state.value
             if (current !is State.Paired) error("Device not paired with SIMcountry yet.")
@@ -90,7 +101,7 @@ class AutostartCoordinator(context: Context) {
             val output = connection.executeShell(command)
             val now = System.currentTimeMillis()
             saveAndPublish(current.copy(lastConnectAt = now, lastError = null))
-            Result.success(output)
+            return Result.success(output)
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
@@ -99,7 +110,7 @@ class AutostartCoordinator(context: Context) {
             if (current is State.Paired) {
                 saveAndPublish(current.copy(lastError = t.message))
             }
-            Result.failure(t)
+            return Result.failure(t)
         }
     }
 
