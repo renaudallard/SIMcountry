@@ -65,7 +65,20 @@ class Spake2(
     // unblinded point. Match that exactly: the integer value here is 8 * (rand mod L).
     private val privateScalar: BigInteger = randomScalar(rng).multiply(COFACTOR)
     private val passwordHashFull: ByteArray = MessageDigest.getInstance("SHA-512").digest(password)
-    private val passwordScalar: BigInteger = Ed25519Math.fromLittleEndian(passwordHashFull).mod(Ed25519Math.L)
+
+    // BoringSSL applies a fix-up right after x25519_sc_reduce: add 0/L/2L/4L
+    // as needed so the result is a multiple of 8. That ensures
+    // passwordScalar * M_modified lands entirely in the prime-order
+    // subgroup, so a passive observer cannot recover (pw mod 8) from the
+    // outbound's cofactor component.
+    private val passwordScalar: BigInteger = run {
+        var s = Ed25519Math.fromLittleEndian(passwordHashFull).mod(Ed25519Math.L)
+        if (s.testBit(0)) s = s.add(Ed25519Math.L)
+        if (s.testBit(1)) s = s.add(Ed25519Math.L.shiftLeft(1))
+        if (s.testBit(2)) s = s.add(Ed25519Math.L.shiftLeft(2))
+        s
+    }
+
     private val myPwPoint: Ed25519Math.Point = if (role == Role.CLIENT) M_POINT else N_POINT
     private val theirPwPoint: Ed25519Math.Point = if (role == Role.CLIENT) N_POINT else M_POINT
 
