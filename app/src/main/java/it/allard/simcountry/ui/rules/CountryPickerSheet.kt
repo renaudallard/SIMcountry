@@ -52,6 +52,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import it.allard.simcountry.telephony.Mcc
+import java.text.Normalizer
+
+private val DIACRITICS = Regex("\\p{InCombiningDiacriticalMarks}+")
+
+private fun fold(s: String): String =
+    Normalizer.normalize(s, Normalizer.Form.NFD).replace(DIACRITICS, "").lowercase()
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,11 +68,11 @@ fun CountryPickerSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var query by remember { mutableStateOf("") }
     val results = remember(query) {
-        val q = query.trim().lowercase()
+        val q = fold(query.trim())
         val base = Mcc.countries.sortedBy { it.name }
         if (q.isEmpty()) base
         else base.filter {
-            it.name.lowercase().contains(q) ||
+            fold(it.name).contains(q) ||
                 it.iso.lowercase().contains(q) ||
                 it.mccs.any { mcc -> mcc.contains(q) }
         }
