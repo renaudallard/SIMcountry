@@ -55,6 +55,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import it.allard.simcountry.daemon.autorestart.AutostartCoordinator
 import it.allard.simcountry.data.AppContainer
+import it.allard.simcountry.ipc.SimControlClient
 import it.allard.simcountry.ui.DaemonBanner
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -67,6 +68,7 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
     val rulesDoc by container.rulesStore.doc.collectAsState()
     val suppressions by container.overrideDetector.suppressedUntil.collectAsState()
     val autostartState by container.autostart.state.collectAsState()
+    val clientState by client.state.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var confirmForget by remember { mutableStateOf(false) }
@@ -86,7 +88,7 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
                 when (val s = autostartState) {
                     is AutostartCoordinator.State.Unpaired -> {
                         Text("Not paired. Pair once with Wireless ADB and the daemon will come back on every boot.")
-                        if (client.state.collectAsState().value is it.allard.simcountry.ipc.SimControlClient.State.Connected) {
+                        if (clientState is SimControlClient.State.Connected) {
                             Text(
                                 "A previously started daemon is still attached for this session. It will stop at the next reboot unless you pair again.",
                                 style = MaterialTheme.typography.bodySmall,
