@@ -73,6 +73,7 @@ class CountryWatcherService : Service() {
     private val callbacks = mutableMapOf<Int, TelephonyCallback>()
     private var tickJob: Job? = null
     private var overrideCheckJob: Job? = null
+    private var reconnectJob: Job? = null
     private var subsChangedListener: SubscriptionManager.OnSubscriptionsChangedListener? = null
     private val callbackExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "simcountry-telephony").apply { isDaemon = true }
@@ -263,7 +264,8 @@ class CountryWatcherService : Service() {
     }
 
     private fun startDaemonReconnectLoop() {
-        scope.launch {
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
             var wasConnected = false
             app.container.simControlClient.state.collect { st ->
                 val isConnected = st is SimControlClient.State.Connected
