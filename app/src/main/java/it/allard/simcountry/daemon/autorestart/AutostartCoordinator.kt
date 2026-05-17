@@ -59,13 +59,18 @@ class AutostartCoordinator(context: Context) {
     private val app = context.applicationContext
     private val stateFile = File(app.filesDir, STATE_FILE)
     private val json = Json { prettyPrint = false; ignoreUnknownKeys = true; encodeDefaults = true }
-    // var so forgetPairing() can swap in a freshly-generated key after the
-    // old keystore files are deleted.
-    private var key: AdbRsaKey = AdbRsaKey.loadOrCreate(app)
+    // Loaded on demand so construction stays cheap and the 2048-bit RSA
+    // generation runs on the worker thread that calls pair/reconnect
+    // rather than whichever thread builds AppContainer. forgetPairing()
+    // nulls this back out so the next operation regenerates the key.
+    private var key: AdbRsaKey? = null
 
     private val _state = MutableStateFlow(loadState())
     val state: StateFlow<State> = _state.asStateFlow()
     private val operationLock = Mutex()
+
+    private fun ensureKey(): AdbRsaKey =
+        key ?: AdbRsaKey.loadOrCreate(app).also { key = it }
 
     suspend fun pair(pairingCode: String): Result<Unit> = withContext(Dispatchers.IO) {
         operationLock.withLock { runPair(pairingCode) }
@@ -75,7 +80,7 @@ class AutostartCoordinator(context: Context) {
         try {
             val port = AdbMdns.findPort(app, AdbMdns.SERVICE_TYPE_PAIRING, PAIR_DISCOVER_MS)
                 ?: error("Could not find ADB pairing endpoint. Enable Wireless Debugging and tap \"Pair device with pairing code\".")
-            val pairing = AdbPairing(key, pairingCode)
+            val pairing = AdbPairing(ensureKey(), pairingCode)
             pairing.pair(HOST, port)
             val now = System.currentTimeMillis()
             val next = State.Paired(pairedAt = now, lastConnectAt = null, lastError = null)
@@ -93,11 +98,12 @@ class AutostartCoordinator(context: Context) {
     }
 
     /**
-     * Delete the daemon RSA key, regenerate a fresh keypair, and reset the
-     * persisted state to Unpaired. The device's adbd still trusts the old
-     * key in its `/data/misc/adb/adb_keys` list; we cannot purge it from a
-     * non-system app, so the UI should tell the user to revoke pairings
-     * from Developer Options if they want a full cleanup.
+     * Delete the daemon RSA key and reset the persisted state to Unpaired.
+     * The next pair/reconnect generates a fresh keypair on demand. The
+     * device's adbd still trusts the old key in its
+     * `/data/misc/adb/adb_keys` list; we cannot purge it from a non-system
+     * app, so the UI should tell the user to revoke pairings from Developer
+     * Options if they want a full cleanup.
      */
     suspend fun forgetPairing(): Result<Unit> = withContext(Dispatchers.IO) {
         operationLock.withLock { runForget() }
@@ -107,8 +113,10 @@ class AutostartCoordinator(context: Context) {
         try {
             File(app.filesDir, "adb_rsa.pkcs8").delete()
             File(app.filesDir, "adb_rsa.x509").delete()
-            // loadOrCreate now sees the files gone and generates a fresh keypair.
-            key = AdbRsaKey.loadOrCreate(app)
+            // Drop the cached key so the next pair/reconnect generates
+            // a fresh one. We don't generate eagerly here because the
+            // user may forget the pairing and never re-pair.
+            key = null
             saveAndPublish(State.Unpaired)
             return Result.success(Unit)
         } catch (ce: CancellationException) {
@@ -125,7 +133,7 @@ class AutostartCoordinator(context: Context) {
             if (current !is State.Paired) error("Device not paired with SIMcountry yet.")
             val port = AdbMdns.findPort(app, AdbMdns.SERVICE_TYPE_CONNECT, CONNECT_DISCOVER_MS)
                 ?: error("Could not find Wireless ADB connect endpoint. Is Wireless Debugging enabled?")
-            val connection = AdbConnection(HOST, port, key)
+            val connection = AdbConnection(HOST, port, ensureKey())
             val command = daemonStartCommand(app.packageName)
             val output = connection.executeShell(command)
             val now = System.currentTimeMillis()
