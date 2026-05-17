@@ -97,6 +97,9 @@ class CountryWatcherService : Service() {
         startSubscriptionsChangedListener()
         startTickLoop()
         startDaemonReconnectLoop()
+        if (intent?.action == ACTION_RECONNECT_DAEMON) {
+            scope.launch { app.container.autostart.reconnectDaemon() }
+        }
         return START_STICKY
     }
 
@@ -362,9 +365,15 @@ class CountryWatcherService : Service() {
         private const val TAG = "CountryWatcherService"
         private const val CHANNEL_ID = "watcher"
         private const val NOTIF_ID = 1
+        const val ACTION_RECONNECT_DAEMON = "it.allard.simcountry.action.RECONNECT_DAEMON"
 
         fun start(context: Context) {
             val i = Intent(context, CountryWatcherService::class.java)
+            context.startForegroundService(i)
+        }
+
+        fun startWithReconnect(context: Context) {
+            val i = Intent(context, CountryWatcherService::class.java).setAction(ACTION_RECONNECT_DAEMON)
             context.startForegroundService(i)
         }
     }
