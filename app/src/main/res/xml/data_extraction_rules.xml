@@ -40,6 +40,7 @@
         <!-- Autostart pair state references the same key, useless on a
              different device. -->
         <exclude domain="file" path="autostart.json" />
+        <exclude domain="file" path="autostart.json.tmp" />
         <!-- User-visible state (rules, SIM nicknames, override suppressions)
              is fair game; users probably want it restored. -->
     </cloud-backup>
@@ -49,5 +50,6 @@
         <exclude domain="file" path="adb_rsa.pkcs8.tmp" />
         <exclude domain="file" path="adb_rsa.x509.tmp" />
         <exclude domain="file" path="autostart.json" />
+        <exclude domain="file" path="autostart.json.tmp" />
     </device-transfer>
 </data-extraction-rules>
