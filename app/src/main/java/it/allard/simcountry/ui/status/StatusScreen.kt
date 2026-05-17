@@ -29,8 +29,11 @@
 
 package it.allard.simcountry.ui.status
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -49,6 +52,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import it.allard.simcountry.daemon.autorestart.AutostartCoordinator
 import it.allard.simcountry.data.AppContainer
@@ -65,6 +69,7 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
     val suppressions by container.overrideDetector.suppressedUntil.collectAsState()
     val autostartState by container.autostart.state.collectAsState()
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var confirmForget by remember { mutableStateOf(false) }
 
     Column(
@@ -152,7 +157,14 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
                 }) { Text("Forget") }
             },
             dismissButton = {
-                TextButton(onClick = { confirmForget = false }) { Text("Cancel") }
+                Row {
+                    TextButton(onClick = {
+                        val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        runCatching { context.startActivity(intent) }
+                    }) { Text("Open Developer options") }
+                    TextButton(onClick = { confirmForget = false }) { Text("Cancel") }
+                }
             },
         )
     }
