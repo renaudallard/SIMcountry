@@ -34,6 +34,9 @@
              leak the private key or carry a now-untrusted key. -->
         <exclude domain="file" path="adb_rsa.pkcs8" />
         <exclude domain="file" path="adb_rsa.x509" />
+        <!-- Same data while AdbRsaKey.loadOrCreate is mid-rotation. -->
+        <exclude domain="file" path="adb_rsa.pkcs8.tmp" />
+        <exclude domain="file" path="adb_rsa.x509.tmp" />
         <!-- Autostart pair state references the same key, useless on a
              different device. -->
         <exclude domain="file" path="autostart.json" />
@@ -43,6 +46,8 @@
     <device-transfer>
         <exclude domain="file" path="adb_rsa.pkcs8" />
         <exclude domain="file" path="adb_rsa.x509" />
+        <exclude domain="file" path="adb_rsa.pkcs8.tmp" />
+        <exclude domain="file" path="adb_rsa.x509.tmp" />
         <exclude domain="file" path="autostart.json" />
     </device-transfer>
 </data-extraction-rules>
