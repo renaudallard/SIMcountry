@@ -252,7 +252,11 @@ class AdbConnection(
     class ProtocolException(message: String) : IOException(message)
 
     companion object {
-        private const val SYSTEM_ID_FEATURES = "host::features=shell_v2,cmd"
+        // We only ever open a plain "shell:<cmd>" stream, so claiming
+        // shell_v2 support in features=... would be misleading and would
+        // also commit us to parsing v2's 5-byte sub-headers if adbd ever
+        // decided to use them. Bare host:: works fine.
+        private const val SYSTEM_ID_FEATURES = "host::"
         private const val OUR_LOCAL_ID = 1
         private const val STLS_VERSION = 1
         private const val AUTH_TOKEN_SIZE = 20
