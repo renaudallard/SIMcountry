@@ -98,7 +98,7 @@ For a debug build, replace `it.allard.simcountry` with `it.allard.simcountry.deb
 
 ## Build
 
-Requires JDK 21 and the Android SDK with platform 35 installed.
+Requires JDK 21, the Android SDK with platform 35 installed, NDK 27.2.12479018 (installed via `sdkmanager 'ndk;27.2.12479018'`), and a Rust toolchain with the `aarch64-linux-android` target (`rustup target add aarch64-linux-android`). The Gradle build invokes `cargo` to compile the native daemon (`daemon-native/`) and stages it under `app/src/main/jniLibs/arm64-v8a/libsimcountryd.so`.
 
 ```sh
 JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64 \
@@ -119,6 +119,10 @@ Unit tests:
 ## Project layout
 
 ```
+daemon-native/           Rust ELF that runs as shell UID (replaces the
+                         app_process-based Kotlin daemon; rollout in
+                         progress, see CHANGELOG/git history)
+
 app/src/main/aidl/it/allard/simcountry/ipc/
   ISimControl.aidl       cross-process control surface
   SubInfo.aidl           parcelable

@@ -37,6 +37,7 @@ plugins {
 android {
     namespace = "it.allard.simcountry"
     compileSdk = 35
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "it.allard.simcountry"
@@ -44,6 +45,9 @@ android {
         targetSdk = 35
         versionCode = 8
         versionName = "0.1.7"
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     signingConfigs {
@@ -106,6 +110,13 @@ android {
                 "/META-INF/versions/**/OSGI-INF/MANIFEST.MF",
             )
         }
+        // The native daemon (libsimcountryd.so) is an ELF executable, not a
+        // shared library. It must be extracted to nativeLibraryDir as a real
+        // file on disk so adb shell can execve it; legacy packaging stores
+        // it uncompressed in the APK and triggers the install-time extract.
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 
     applicationVariants.all {
@@ -115,6 +126,68 @@ android {
                 "SIMcountry-${variant.versionName}.apk"
         }
     }
+}
+
+// Builds the Rust daemon (daemon-native/) for arm64-v8a and stages it under
+// jniLibs/ so AGP packages it as lib/arm64-v8a/libsimcountryd.so. The .so
+// suffix is required: Android only extracts files matching that pattern from
+// the APK into the on-device nativeLibraryDir, which is where adb shell will
+// need to execve from.
+val buildDaemonNative by tasks.registering(Exec::class) {
+    val nativeDir = rootProject.projectDir.resolve("daemon-native")
+    val targetTriple = "aarch64-linux-android"
+    val apiLevel = android.defaultConfig.minSdk ?: 33
+    val cargoOut = nativeDir.resolve("target/$targetTriple/release/simcountryd")
+    val stagedSo = layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libsimcountryd.so").asFile
+
+    workingDir = nativeDir
+    inputs.dir(nativeDir.resolve("src"))
+    inputs.file(nativeDir.resolve("Cargo.toml"))
+    inputs.property("ndkVersion", android.ndkVersion)
+    inputs.property("apiLevel", apiLevel)
+    outputs.file(stagedSo)
+
+    val hostTag = when {
+        org.gradle.internal.os.OperatingSystem.current().isLinux -> "linux-x86_64"
+        org.gradle.internal.os.OperatingSystem.current().isMacOsX -> "darwin-x86_64"
+        org.gradle.internal.os.OperatingSystem.current().isWindows -> "windows-x86_64"
+        else -> error("unsupported host OS for NDK toolchain lookup")
+    }
+    val ndkRoot = android.sdkDirectory.resolve("ndk/${android.ndkVersion}")
+    val toolchainBin = ndkRoot.resolve("toolchains/llvm/prebuilt/$hostTag/bin")
+    val linker = toolchainBin.resolve("$targetTriple$apiLevel-clang")
+    val envSuffix = targetTriple.replace('-', '_')
+
+    commandLine("cargo", "build", "--release", "--target", targetTriple)
+    environment("CARGO_TARGET_${envSuffix.uppercase()}_LINKER", linker.absolutePath)
+    environment("CC_$envSuffix", linker.absolutePath)
+    environment("AR_$envSuffix", toolchainBin.resolve("llvm-ar").absolutePath)
+
+    doFirst {
+        check(ndkRoot.isDirectory) {
+            "NDK ${android.ndkVersion} not found at $ndkRoot. Install via `sdkmanager 'ndk;${android.ndkVersion}'`."
+        }
+        check(linker.isFile) { "expected NDK linker at $linker but it does not exist" }
+    }
+
+    doLast {
+        check(cargoOut.isFile) { "cargo produced no binary at $cargoOut" }
+        stagedSo.parentFile.mkdirs()
+        cargoOut.copyTo(stagedSo, overwrite = true)
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        afterEvaluate {
+            val mergeTask = tasks.findByName("merge${variant.name.replaceFirstChar { it.uppercase() }}JniLibFolders")
+            mergeTask?.dependsOn(buildDaemonNative)
+        }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn(buildDaemonNative)
 }
 
 dependencies {
