@@ -22,6 +22,9 @@
 //! Real per-caller identity (untrusted_app vs another local app) is
 //! deferred to a future /proc-based peer check.
 
+mod binder;
+mod isub;
+
 use std::ffi::{c_char, c_int, CString};
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -64,6 +67,8 @@ enum Request {
     AuthResponse { hmac: String },
     Ping,
     GetInfo,
+    GetDefaultDataSubId,
+    SetDefaultDataSubId { sub_id: i32 },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -78,6 +83,8 @@ enum Response {
         pid: u32,
         uid: u32,
     },
+    DefaultDataSubId { sub_id: i32 },
+    Ok,
     Error { message: String },
 }
 
@@ -85,11 +92,48 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("--ping") => process::exit(run_ping()),
+        Some("--get-data-sub") => process::exit(run_get_data_sub()),
+        Some("--set-data-sub") => match args.get(2).and_then(|s| s.parse::<i32>().ok()) {
+            Some(id) => process::exit(run_set_data_sub(id)),
+            None => {
+                eprintln!("simcountryd: --set-data-sub requires an integer sub id");
+                process::exit(2);
+            }
+        },
         Some(unknown) => {
-            eprintln!("simcountryd: unknown arg `{unknown}`; usage: simcountryd [--ping]");
+            eprintln!(
+                "simcountryd: unknown arg `{unknown}`; \
+                 usage: simcountryd [--ping|--get-data-sub|--set-data-sub <id>]"
+            );
             process::exit(2);
         }
         None => run_daemon(),
+    }
+}
+
+fn run_get_data_sub() -> i32 {
+    match isub::get_default_data_sub_id() {
+        Ok(id) => {
+            println!("default_data_sub_id={id}");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+fn run_set_data_sub(id: i32) -> i32 {
+    match isub::set_default_data_sub_id(id) {
+        Ok(()) => {
+            println!("set ok");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
     }
 }
 
@@ -212,6 +256,16 @@ fn dispatch(state: &mut SessionState, apk_hash: &[u8; 32], req: Request) -> Resp
             pid: process::id(),
             uid: unsafe { libc::getuid() },
         },
+        (SessionState::Authed, Request::GetDefaultDataSubId) => match isub::get_default_data_sub_id() {
+            Ok(sub_id) => Response::DefaultDataSubId { sub_id },
+            Err(e) => Response::Error { message: e },
+        },
+        (SessionState::Authed, Request::SetDefaultDataSubId { sub_id }) => {
+            match isub::set_default_data_sub_id(sub_id) {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Error { message: e },
+            }
+        }
         _ => Response::Error {
             message: "out of order or unauthorized".into(),
         },
