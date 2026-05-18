@@ -40,6 +40,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
@@ -47,13 +50,13 @@ import java.net.InetSocketAddress
 import java.net.Socket
 
 /**
- * Connects to the Rust daemon over 127.0.0.1:39351 and keeps the
- * connection alive with periodic pings. Originally targeted the abstract
- * Unix socket `\0simcountry-daemon`, but Android 16 SELinux blocks
- * untrusted_app -> shell `unix_stream_socket connectto`, so we tunnel
- * over loopback TCP instead. The phase 2 daemon only speaks ping/pong;
- * richer commands arrive in phase 3+. State is the surface the UI reads
- * to drive the green/red banner.
+ * Talks to the Rust daemon over 127.0.0.1:39351 using length-prefixed
+ * JSON frames. On connect we GetInfo to recover the daemon's version
+ * and pid (drives the banner) and then keepalive with Ping every few
+ * seconds. Disconnect triggers a reconnect with backoff.
+ *
+ * Schema mirrored on the Rust side as serde tagged enums with the same
+ * "kind" discriminator and snake_case variant names.
  */
 class SimControlSocketClient(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
@@ -63,7 +66,33 @@ class SimControlSocketClient(
 
     sealed interface State {
         data object Disconnected : State
-        data object Connected : State
+        data class Connected(val version: String, val pid: Int) : State
+    }
+
+    @Serializable
+    sealed class Request {
+        @Serializable
+        @SerialName("ping")
+        data object Ping : Request()
+
+        @Serializable
+        @SerialName("get_info")
+        data object GetInfo : Request()
+    }
+
+    @Serializable
+    sealed class Response {
+        @Serializable
+        @SerialName("pong")
+        data object Pong : Response()
+
+        @Serializable
+        @SerialName("info")
+        data class Info(val version: String, val pid: Int, val uid: Int) : Response()
+
+        @Serializable
+        @SerialName("error")
+        data class Error(val message: String) : Response()
     }
 
     private val _state = MutableStateFlow<State>(State.Disconnected)
@@ -94,26 +123,32 @@ class SimControlSocketClient(
             val input = DataInputStream(socket.getInputStream())
             val output = DataOutputStream(socket.getOutputStream())
 
-            // Initial ping so we don't go Connected for any random listener.
-            if (!roundtripPing(input, output)) {
-                throw IOException("daemon did not pong on connect")
+            val info = when (val r = roundtrip(input, output, Request.GetInfo)) {
+                is Response.Info -> r
+                else -> throw IOException("expected info on connect, got $r")
             }
-            _state.value = State.Connected
-            Log.i(TAG, "daemon socket connected")
+            _state.value = State.Connected(version = info.version, pid = info.pid)
+            Log.i(TAG, "daemon socket connected v=${info.version} pid=${info.pid} uid=${info.uid}")
 
             while (true) {
                 Thread.sleep(KEEPALIVE_MS)
-                if (!roundtripPing(input, output)) {
-                    throw IOException("daemon did not pong on keepalive")
+                val resp = roundtrip(input, output, Request.Ping)
+                if (resp !is Response.Pong) {
+                    throw IOException("ping got $resp")
                 }
             }
         }
     }
 
-    private fun roundtripPing(input: DataInputStream, output: DataOutputStream): Boolean {
-        writeFrame(output, "ping".toByteArray())
-        val reply = readFrame(input)
-        return reply.contentEquals("pong".toByteArray())
+    private fun roundtrip(
+        input: DataInputStream,
+        output: DataOutputStream,
+        req: Request,
+    ): Response {
+        val reqBytes = WIRE.encodeToString(Request.serializer(), req).toByteArray()
+        writeFrame(output, reqBytes)
+        val replyBytes = readFrame(input)
+        return WIRE.decodeFromString(Response.serializer(), String(replyBytes))
     }
 
     private fun writeFrame(out: DataOutputStream, payload: ByteArray) {
@@ -141,5 +176,10 @@ class SimControlSocketClient(
         private const val CONNECT_TIMEOUT_MS = 2_000
         private const val READ_TIMEOUT_MS = 4_000
         private const val MAX_FRAME = 64 * 1024
+
+        private val WIRE = Json {
+            classDiscriminator = "kind"
+            ignoreUnknownKeys = true
+        }
     }
 }

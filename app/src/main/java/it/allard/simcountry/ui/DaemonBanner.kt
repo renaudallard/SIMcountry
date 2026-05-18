@@ -99,6 +99,14 @@ fun DaemonBanner(client: SimControlSocketClient) {
                     tint = Color.White,
                 )
             }
+            if (connected) {
+                val s = state as SimControlSocketClient.State.Connected
+                Text(
+                    "version: ${s.version} pid: ${s.pid}",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             AnimatedVisibility(expanded) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(

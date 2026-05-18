@@ -1,21 +1,18 @@
 // Copyright (c) 2026 Renaud Allard <renaud@allard.it>
 // SPDX-License-Identifier: BSD-2-Clause
 
-//! Phase 1+2 daemon.
+//! Phase 3 daemon.
 //!
-//! Listens on TCP 127.0.0.1:39351, accepts length-prefixed frames (4-byte
-//! big-endian length, then payload), and replies. The only command
-//! implemented is `ping` -> `pong`. Used by the in-binary `--ping` test
-//! client and by the app's `SimControlSocketClient` to drive the daemon
-//! status banner.
+//! Listens on TCP 127.0.0.1:39351. Each frame is a 4-byte big-endian
+//! length followed by a JSON-encoded Request or Response. The discriminator
+//! field is `kind`. Commands:
+//!   * `ping` -> `pong` (keepalive)
+//!   * `get_info` -> `info{version, pid, uid}`
 //!
-//! Abstract Unix sockets were the original choice but Android SELinux
-//! denies untrusted_app -> shell `unix_stream_socket connectto` on Android
-//! 16, so the wire ran over a 127.0.0.1 TCP port instead. apps with the
-//! INTERNET permission (we already require it for the Wireless-ADB
-//! autostart) can reach localhost. Anyone else local can too, so a
-//! shared-secret handshake is required before any privileged command
-//! lands in phase 4+.
+//! Unauthenticated for now: any local process with INTERNET can talk to
+//! the daemon. Acceptable because no command is privileged yet. The auth
+//! handshake lands in the same phase that introduces the first telephony
+//! Binder call.
 
 use std::ffi::{c_char, c_int, CString};
 use std::io::{self, Read, Write};
@@ -23,6 +20,8 @@ use std::net::{TcpListener, TcpStream};
 use std::process;
 use std::thread;
 use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
 
 const TAG: &str = "SimcountryDaemon";
 const BIND_ADDR: &str = "127.0.0.1:39351";
@@ -42,6 +41,27 @@ fn log(prio: c_int, msg: &str) {
         unsafe { __android_log_write(prio, t.as_ptr(), m.as_ptr()) };
     }
     println!("{msg}");
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Request {
+    Ping,
+    GetInfo,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Response {
+    Pong,
+    Info {
+        version: String,
+        pid: u32,
+        uid: u32,
+    },
+    Error {
+        message: String,
+    },
 }
 
 fn main() {
@@ -68,7 +88,11 @@ fn run_daemon() -> ! {
     let uid = unsafe { libc::getuid() };
     log(
         ANDROID_LOG_INFO,
-        &format!("listening on {BIND_ADDR} pid={} uid={uid}", process::id()),
+        &format!(
+            "listening on {BIND_ADDR} pid={} uid={uid} version={}",
+            process::id(),
+            env!("CARGO_PKG_VERSION"),
+        ),
     );
     for client in listener.incoming() {
         match client {
@@ -100,21 +124,34 @@ fn handle_client(mut stream: TcpStream) {
                 return;
             }
         };
-        let cmd = match std::str::from_utf8(&frame) {
-            Ok(s) => s.trim(),
-            Err(_) => {
-                let _ = write_frame(&mut stream, b"error: non-utf8");
-                continue;
+        let resp = match serde_json::from_slice::<Request>(&frame) {
+            Ok(req) => dispatch(req),
+            Err(e) => Response::Error {
+                message: format!("parse: {e}"),
+            },
+        };
+        let bytes = match serde_json::to_vec(&resp) {
+            Ok(b) => b,
+            Err(e) => {
+                log(ANDROID_LOG_WARN, &format!("encode failed: {e}"));
+                return;
             }
         };
-        let reply: Vec<u8> = match cmd {
-            "ping" => b"pong".to_vec(),
-            other => format!("error: unknown command `{other}`").into_bytes(),
-        };
-        if let Err(e) = write_frame(&mut stream, &reply) {
+        if let Err(e) = write_frame(&mut stream, &bytes) {
             log(ANDROID_LOG_WARN, &format!("write failed to {peer}: {e}"));
             return;
         }
+    }
+}
+
+fn dispatch(req: Request) -> Response {
+    match req {
+        Request::Ping => Response::Pong,
+        Request::GetInfo => Response::Info {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            pid: process::id(),
+            uid: unsafe { libc::getuid() },
+        },
     }
 }
 
@@ -126,26 +163,39 @@ fn run_ping() -> i32 {
             return 1;
         }
     };
-    if let Err(e) = write_frame(&mut s, b"ping") {
+    let req = match serde_json::to_vec(&Request::Ping) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("encode: {e}");
+            return 1;
+        }
+    };
+    if let Err(e) = write_frame(&mut s, &req) {
         eprintln!("write: {e}");
         return 1;
     }
-    match read_frame(&mut s) {
-        Ok(Some(reply)) => {
-            let txt = String::from_utf8_lossy(&reply);
-            println!("{txt}");
-            if txt == "pong" {
-                0
-            } else {
-                2
-            }
-        }
+    let frame = match read_frame(&mut s) {
+        Ok(Some(f)) => f,
         Ok(None) => {
             eprintln!("eof before reply");
-            1
+            return 1;
         }
         Err(e) => {
             eprintln!("read: {e}");
+            return 1;
+        }
+    };
+    match serde_json::from_slice::<Response>(&frame) {
+        Ok(Response::Pong) => {
+            println!("pong");
+            0
+        }
+        Ok(other) => {
+            println!("unexpected: {other:?}");
+            2
+        }
+        Err(e) => {
+            eprintln!("decode: {e}");
             1
         }
     }
