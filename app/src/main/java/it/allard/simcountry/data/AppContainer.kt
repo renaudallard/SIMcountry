@@ -42,7 +42,7 @@ class AppContainer(context: Context) {
     private val app = context.applicationContext
     val rulesStore: RulesStore = RulesStore(app)
     val simControlClient: SimControlClient = SimControlClient()
-    val simControlSocketClient: SimControlSocketClient = SimControlSocketClient()
+    val simControlSocketClient: SimControlSocketClient = SimControlSocketClient(app)
     val simRegistry: SimRegistry = SimRegistry(app, simControlClient)
     val overrideDetector: OverrideDetector = OverrideDetector(app)
     val keyguardGate: KeyguardGate = KeyguardGate(app)

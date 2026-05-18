@@ -29,6 +29,7 @@
 
 package it.allard.simcountry.ipc
 
+import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -45,20 +46,23 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.File
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.security.MessageDigest
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Talks to the Rust daemon over 127.0.0.1:39351 using length-prefixed
- * JSON frames. On connect we GetInfo to recover the daemon's version
- * and pid (drives the banner) and then keepalive with Ping every few
- * seconds. Disconnect triggers a reconnect with backoff.
- *
- * Schema mirrored on the Rust side as serde tagged enums with the same
- * "kind" discriminator and snake_case variant names.
+ * JSON frames. The session is: Hello -> Challenge{nonce} -> AuthResponse
+ * {hmac_sha256(apk_hash, nonce)} -> AuthOk, then GetInfo for the banner,
+ * then a periodic Ping keepalive. The apk hash is the SHA-256 of the
+ * installed base.apk; daemon recomputes the same from /proc/self/exe.
  */
 class SimControlSocketClient(
+    context: Context,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val host: String = HOST,
     private val port: Int = PORT,
@@ -71,30 +75,23 @@ class SimControlSocketClient(
 
     @Serializable
     sealed class Request {
-        @Serializable
-        @SerialName("ping")
-        data object Ping : Request()
-
-        @Serializable
-        @SerialName("get_info")
-        data object GetInfo : Request()
+        @Serializable @SerialName("hello") data object Hello : Request()
+        @Serializable @SerialName("auth_response") data class AuthResponse(val hmac: String) : Request()
+        @Serializable @SerialName("ping") data object Ping : Request()
+        @Serializable @SerialName("get_info") data object GetInfo : Request()
     }
 
     @Serializable
     sealed class Response {
-        @Serializable
-        @SerialName("pong")
-        data object Pong : Response()
-
-        @Serializable
-        @SerialName("info")
-        data class Info(val version: String, val pid: Int, val uid: Int) : Response()
-
-        @Serializable
-        @SerialName("error")
-        data class Error(val message: String) : Response()
+        @Serializable @SerialName("challenge") data class Challenge(val nonce: String) : Response()
+        @Serializable @SerialName("auth_ok") data object AuthOk : Response()
+        @Serializable @SerialName("auth_fail") data class AuthFail(val message: String) : Response()
+        @Serializable @SerialName("pong") data object Pong : Response()
+        @Serializable @SerialName("info") data class Info(val version: String, val pid: Int, val uid: Int) : Response()
+        @Serializable @SerialName("error") data class Error(val message: String) : Response()
     }
 
+    private val apkPath: String = context.applicationInfo.sourceDir
     private val _state = MutableStateFlow<State>(State.Disconnected)
     val state: StateFlow<State> = _state.asStateFlow()
 
@@ -117,18 +114,21 @@ class SimControlSocketClient(
     }
 
     private fun runConnection() {
+        val apkHash = sha256(File(apkPath))
         Socket().use { socket ->
             socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
             socket.soTimeout = READ_TIMEOUT_MS
             val input = DataInputStream(socket.getInputStream())
             val output = DataOutputStream(socket.getOutputStream())
 
+            handshake(input, output, apkHash)
+
             val info = when (val r = roundtrip(input, output, Request.GetInfo)) {
                 is Response.Info -> r
                 else -> throw IOException("expected info on connect, got $r")
             }
             _state.value = State.Connected(version = info.version, pid = info.pid)
-            Log.i(TAG, "daemon socket connected v=${info.version} pid=${info.pid} uid=${info.uid}")
+            Log.i(TAG, "daemon authed and connected v=${info.version} pid=${info.pid} uid=${info.uid}")
 
             while (true) {
                 Thread.sleep(KEEPALIVE_MS)
@@ -137,6 +137,23 @@ class SimControlSocketClient(
                     throw IOException("ping got $resp")
                 }
             }
+        }
+    }
+
+    private fun handshake(input: DataInputStream, output: DataOutputStream, apkHash: ByteArray) {
+        val challenge = when (val r = roundtrip(input, output, Request.Hello)) {
+            is Response.Challenge -> r
+            else -> throw IOException("expected challenge, got $r")
+        }
+        val nonce = hexDecode(challenge.nonce)
+        val mac = Mac.getInstance("HmacSHA256").apply {
+            init(SecretKeySpec(apkHash, "HmacSHA256"))
+        }
+        val tag = mac.doFinal(nonce)
+        when (val r = roundtrip(input, output, Request.AuthResponse(hmac = hexEncode(tag)))) {
+            is Response.AuthOk -> { /* good */ }
+            is Response.AuthFail -> throw IOException("auth fail: ${r.message}")
+            else -> throw IOException("expected auth_ok, got $r")
         }
     }
 
@@ -167,6 +184,40 @@ class SimControlSocketClient(
         return buf
     }
 
+    private fun sha256(file: File): ByteArray {
+        val md = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { stream ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = stream.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest()
+    }
+
+    private fun hexEncode(bytes: ByteArray): String {
+        val out = StringBuilder(bytes.size * 2)
+        for (b in bytes) {
+            out.append(HEX[(b.toInt() ushr 4) and 0xf])
+            out.append(HEX[b.toInt() and 0xf])
+        }
+        return out.toString()
+    }
+
+    private fun hexDecode(s: String): ByteArray {
+        require(s.length % 2 == 0) { "hex length must be even" }
+        val out = ByteArray(s.length / 2)
+        for (i in out.indices) {
+            val hi = Character.digit(s[i * 2], 16)
+            val lo = Character.digit(s[i * 2 + 1], 16)
+            require(hi >= 0 && lo >= 0) { "non-hex char" }
+            out[i] = ((hi shl 4) or lo).toByte()
+        }
+        return out
+    }
+
     companion object {
         const val HOST = "127.0.0.1"
         const val PORT = 39351
@@ -176,6 +227,7 @@ class SimControlSocketClient(
         private const val CONNECT_TIMEOUT_MS = 2_000
         private const val READ_TIMEOUT_MS = 4_000
         private const val MAX_FRAME = 64 * 1024
+        private val HEX = "0123456789abcdef".toCharArray()
 
         private val WIRE = Json {
             classDiscriminator = "kind"
