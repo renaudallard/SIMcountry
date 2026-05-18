@@ -29,15 +29,20 @@
 
 package it.allard.simcountry.daemon.autorestart
 
-import java.security.KeyStore
+import org.conscrypt.Conscrypt
+import java.net.Socket
+import java.security.Principal
+import java.security.PrivateKey
+import java.security.Provider
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import javax.net.ssl.KeyManager
-import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManager
+import javax.net.ssl.X509ExtendedKeyManager
 import javax.net.ssl.X509TrustManager
 
 /**
@@ -56,24 +61,98 @@ object AdbTls {
      * client certificate when adbd asks for one (the pairing flow does),
      * and trusts the server certificate unconditionally.
      */
+    /**
+     * Bundled Conscrypt provider, kept scoped to this object so SSLContexts
+     * built via [newPairingContext] use Conscrypt (which exposes
+     * `exportKeyingMaterial`) without affecting the rest of the app's TLS.
+     */
+    private val conscryptProvider: Provider = Conscrypt.newProvider()
+
+    /**
+     * Context for the pair step. Backed by the bundled Conscrypt provider
+     * so [AdbPairing] can call `Conscrypt.exportKeyingMaterial` on the
+     * resulting socket. Pair-side TLS still presents the client cert --
+     * adbd's PairingConnectionCtx requires non-empty cert and key
+     * regardless of the SPAKE2 layer riding on top.
+     */
+    fun newPairingContext(
+        clientCert: X509Certificate,
+        clientKey: java.security.PrivateKey,
+    ): SSLContext = build(useConscrypt = true, clientCert = clientCert, clientKey = clientKey)
+
+    /**
+     * Context for the connect step. Uses the platform default TLS
+     * provider, which mutual-auths cleanly with the paired client cert.
+     * Conscrypt's TLSv1.3 client-auth on this device drops the
+     * Certificate message, triggering the server's CERTIFICATE_REQUIRED
+     * alert; the platform provider does not.
+     */
     fun newContext(
         clientCert: X509Certificate? = null,
         clientKey: java.security.PrivateKey? = null,
+    ): SSLContext = build(useConscrypt = false, clientCert = clientCert, clientKey = clientKey)
+
+    private fun build(
+        useConscrypt: Boolean,
+        clientCert: X509Certificate? = null,
+        clientKey: PrivateKey? = null,
     ): SSLContext {
-        val ctx = SSLContext.getInstance("TLSv1.3")
+        val ctx = if (useConscrypt) {
+            SSLContext.getInstance("TLSv1.3", conscryptProvider)
+        } else {
+            SSLContext.getInstance("TLSv1.3")
+        }
         val keyManagers: Array<KeyManager>? = if (clientCert != null && clientKey != null) {
-            val ks = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
-                load(null)
-                setKeyEntry("adb", clientKey, CharArray(0), arrayOf(clientCert))
-            }
-            val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-            kmf.init(ks, CharArray(0))
-            kmf.keyManagers
+            arrayOf(FixedKeyManager(clientCert, clientKey))
         } else {
             null
         }
         ctx.init(keyManagers, arrayOf<TrustManager>(TRUST_ALL), SecureRandom())
         return ctx
+    }
+
+    /**
+     * KeyManager that returns our cert and key unconditionally. The default
+     * SunX509-style KeyManager filters by the server's
+     * certificate_authorities and signature_algorithms hints in the
+     * TLSv1.3 CertificateRequest; adbd's self-signed-handshake pattern
+     * does not include our cert in those hints, so the default sends an
+     * empty Certificate message and the server tears the connection down
+     * with TLSV1_ALERT_CERTIFICATE_REQUIRED.
+     */
+    private class FixedKeyManager(
+        private val cert: X509Certificate,
+        private val key: PrivateKey,
+    ) : X509ExtendedKeyManager() {
+        override fun getClientAliases(keyType: String?, issuers: Array<out Principal>?): Array<String> =
+            arrayOf(ALIAS)
+        override fun chooseClientAlias(
+            keyType: Array<out String>?,
+            issuers: Array<out Principal>?,
+            socket: Socket?,
+        ): String = ALIAS
+        override fun chooseEngineClientAlias(
+            keyType: Array<out String>?,
+            issuers: Array<out Principal>?,
+            engine: SSLEngine?,
+        ): String = ALIAS
+        override fun getServerAliases(keyType: String?, issuers: Array<out Principal>?): Array<String>? = null
+        override fun chooseServerAlias(
+            keyType: String?,
+            issuers: Array<out Principal>?,
+            socket: Socket?,
+        ): String? = null
+        override fun chooseEngineServerAlias(
+            keyType: String?,
+            issuers: Array<out Principal>?,
+            engine: SSLEngine?,
+        ): String? = null
+        override fun getCertificateChain(alias: String?): Array<X509Certificate> = arrayOf(cert)
+        override fun getPrivateKey(alias: String?): PrivateKey = key
+
+        companion object {
+            private const val ALIAS = "adb"
+        }
     }
 
     /** Apply ALPN "adb" to the socket. Must be called before the handshake. */

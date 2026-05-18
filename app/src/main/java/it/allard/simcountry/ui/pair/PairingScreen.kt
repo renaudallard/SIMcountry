@@ -71,6 +71,9 @@ fun PairingScreen(container: AppContainer, onDone: () -> Unit) {
     val context = LocalContext.current
 
     var code by remember { mutableStateOf("") }
+    var hostText by remember { mutableStateOf("") }
+    var pairPortText by remember { mutableStateOf("") }
+    var connectPortText by remember { mutableStateOf("") }
     var pairing by remember { mutableStateOf(false) }
     var lastResult by remember { mutableStateOf<String?>(null) }
 
@@ -87,8 +90,12 @@ fun PairingScreen(container: AppContainer, onDone: () -> Unit) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Pair once; the daemon then restarts itself on every boot.", style = MaterialTheme.typography.bodyMedium)
                 Text("1. Enable Wireless debugging in Developer options.", style = MaterialTheme.typography.bodyMedium)
-                Text("2. Tap Pair device with pairing code; Android shows a six-digit code.", style = MaterialTheme.typography.bodyMedium)
+                Text("2. Tap Pair device with pairing code; Android shows a six-digit code and an IP:port.", style = MaterialTheme.typography.bodyMedium)
                 Text("3. Type the code below and tap Pair.", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "If pairing fails with \"Could not find ADB pairing endpoint\", also type the port shown next to the IP in the pair dialog, plus the connect port from the main Wireless Debugging screen.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(
                         onClick = {
@@ -110,6 +117,32 @@ fun PairingScreen(container: AppContainer, onDone: () -> Unit) {
             modifier = Modifier.fillMaxWidth(),
         )
 
+        OutlinedTextField(
+            value = hostText,
+            onValueChange = { hostText = it.trim() },
+            label = { Text("Wi-Fi IP shown in the pair dialog (optional, defaults to loopback)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        OutlinedTextField(
+            value = pairPortText,
+            onValueChange = { pairPortText = it.filter { c -> c.isDigit() }.take(5) },
+            label = { Text("Pair port (optional)") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        OutlinedTextField(
+            value = connectPortText,
+            onValueChange = { connectPortText = it.filter { c -> c.isDigit() }.take(5) },
+            label = { Text("Connect port (optional, used on each reboot)") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 enabled = code.length == 6 && !pairing,
@@ -117,7 +150,12 @@ fun PairingScreen(container: AppContainer, onDone: () -> Unit) {
                     pairing = true
                     lastResult = null
                     scope.launch {
-                        val r = container.autostart.pair(code)
+                        val r = container.autostart.pair(
+                            pairingCode = code,
+                            manualHost = hostText.ifBlank { null },
+                            manualPairPort = pairPortText.toIntOrNull()?.takeIf { it in 1..65535 },
+                            manualConnectPort = connectPortText.toIntOrNull()?.takeIf { it in 1..65535 },
+                        )
                         if (r.isSuccess) {
                             val reconnect = container.autostart.reconnectDaemon()
                             container.simRegistry.refresh()

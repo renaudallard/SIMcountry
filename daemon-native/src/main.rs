@@ -113,6 +113,7 @@ enum Response {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let foreground = args.iter().any(|a| a == "--foreground");
     match args.get(1).map(String::as_str) {
         Some("--ping") => process::exit(run_ping()),
         Some("--get-sub") => {
@@ -150,14 +151,14 @@ fn main() {
             };
             process::exit(run_set_sub(aspect, id))
         }
-        Some(unknown) => {
+        Some(unknown) if unknown != "--foreground" => {
             eprintln!(
                 "simcountryd: unknown arg `{unknown}`; \
-                 usage: simcountryd [--ping|--get-sub <aspect>|--set-sub <aspect> <id>]"
+                 usage: simcountryd [--foreground|--ping|--get-sub <aspect>|--set-sub <aspect> <id>|--list-subs|--switch-esim <id>]"
             );
             process::exit(2);
         }
-        None => run_daemon(),
+        _ => run_daemon(foreground),
     }
 }
 
@@ -235,7 +236,10 @@ fn run_set_sub(aspect: isub::Aspect, id: i32) -> i32 {
     }
 }
 
-fn run_daemon() -> ! {
+fn run_daemon(foreground: bool) -> ! {
+    if !foreground {
+        daemonize();
+    }
     install_signal_handlers();
     let apk_hash = match compute_apk_hash() {
         Ok(h) => Arc::new(h),
@@ -510,6 +514,52 @@ fn compute_apk_hash() -> io::Result<[u8; 32]> {
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest);
     Ok(out)
+}
+
+/// Detach from the controlling terminal so the daemon survives the
+/// adb shell session that launched it. Without this, adbd SIGTERMs the
+/// process when the spawning shell stream closes (which is immediately,
+/// since reconnectDaemon's `executeShell` waits for command output then
+/// disconnects). Double-fork + setsid + reopen stdio is the canonical
+/// Unix dance; nohup alone is not enough on Android.
+fn daemonize() {
+    unsafe {
+        // First fork: parent exits so the child is reparented.
+        let pid = libc::fork();
+        if pid < 0 {
+            log(ANDROID_LOG_ERROR, "first fork failed");
+            process::exit(1);
+        }
+        if pid > 0 {
+            libc::_exit(0);
+        }
+        // Become session leader, detaching from the controlling terminal.
+        if libc::setsid() < 0 {
+            log(ANDROID_LOG_ERROR, "setsid failed");
+            process::exit(1);
+        }
+        // Second fork: ensures we cannot reacquire a controlling terminal.
+        let pid = libc::fork();
+        if pid < 0 {
+            log(ANDROID_LOG_ERROR, "second fork failed");
+            process::exit(1);
+        }
+        if pid > 0 {
+            libc::_exit(0);
+        }
+        // Close inherited stdio and reopen against /dev/null so the
+        // daemon does not hold open the shell's pipes.
+        let path = std::ffi::CString::new("/dev/null").unwrap();
+        let null_fd = libc::open(path.as_ptr(), libc::O_RDWR);
+        if null_fd >= 0 {
+            libc::dup2(null_fd, 0);
+            libc::dup2(null_fd, 1);
+            libc::dup2(null_fd, 2);
+            if null_fd > 2 {
+                libc::close(null_fd);
+            }
+        }
+    }
 }
 
 extern "C" fn on_signal(_sig: c_int) {

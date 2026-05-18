@@ -36,6 +36,7 @@ serialization = "1.7.3"
 coroutines = "1.9.0"
 navigationCompose = "2.8.4"
 bouncycastle = "1.78.1"
+conscrypt = "2.5.3"
 junit = "4.13.2"
 
 [libraries]
@@ -55,6 +56,7 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 bouncycastle-bcprov = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncycastle" }
 bouncycastle-bcpkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", version.ref = "bouncycastle" }
+conscrypt-android = { group = "org.conscrypt", name = "conscrypt-android", version.ref = "conscrypt" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]

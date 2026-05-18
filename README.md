@@ -62,11 +62,11 @@ The pairing handshake follows AOSP's `pairing_connection` wire format: TLSv1.3 w
 3. From a PC with the device connected over USB and USB Debugging enabled, run the command shown in the app's Status screen. The template is:
 
 ```sh
-adb shell sh -c 'APK=$(pm path it.allard.simcountry | sed "s/^package://;1q"); \
-  exec /system/bin/app_process -Djava.class.path="$APK" /system/bin \
-    --nice-name=simcountry-daemon \
-    it.allard.simcountry.daemon.DaemonEntrypoint it.allard.simcountry'
+adb shell 'APK=$(pm path it.allard.simcountry | sed "s/^package://;1q"); \
+  exec "$(dirname "$APK")/lib/arm64/libsimcountryd.so" --foreground'
 ```
+
+`--foreground` keeps the daemon attached to the shell so its log lines are visible. Without it the binary daemonises (double-fork + setsid + reopen stdio against `/dev/null`) and detaches from the spawning shell session, which is what the Wireless-ADB autostart wants.
 
 For a debug build, replace `it.allard.simcountry` with `it.allard.simcountry.debug`.
 

@@ -67,7 +67,7 @@ import it.allard.simcountry.ipc.SimControlSocketClient
 
 private const val DAEMON_CMD =
     "adb shell 'APK=\$(pm path %s | sed \"s/^package://;1q\"); " +
-        "exec \"\$(dirname \"\$APK\")/lib/arm64/libsimcountryd.so\"'"
+        "exec \"\$(dirname \"\$APK\")/lib/arm64/libsimcountryd.so\" --foreground'"
 
 @Composable
 fun DaemonBanner(client: SimControlSocketClient) {

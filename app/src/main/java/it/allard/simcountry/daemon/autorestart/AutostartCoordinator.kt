@@ -51,8 +51,8 @@ import java.io.File
  *     AES-GCM pairing handshake, and record success.
  *   - [reconnectDaemon] runs on boot (and on demand): we discover the
  *     connect port, present our paired cert/key over TLS, and ask
- *     adbd to launch the same `app_process` invocation that the manual
- *     ADB command runs.
+ *     adbd to launch the native daemon binary (lib/arm64/libsimcountryd.so
+ *     inside the install dir) that the manual ADB command runs.
  */
 class AutostartCoordinator(context: Context) {
 
@@ -72,18 +72,41 @@ class AutostartCoordinator(context: Context) {
     private fun ensureKey(): AdbRsaKey =
         key ?: AdbRsaKey.loadOrCreate(app).also { key = it }
 
-    suspend fun pair(pairingCode: String): Result<Unit> = withContext(Dispatchers.IO) {
-        operationLock.withLock { runPair(pairingCode) }
+    suspend fun pair(
+        pairingCode: String,
+        manualHost: String? = null,
+        manualPairPort: Int? = null,
+        manualConnectPort: Int? = null,
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        operationLock.withLock {
+            runPair(pairingCode, manualHost, manualPairPort, manualConnectPort)
+        }
     }
 
-    private suspend fun runPair(pairingCode: String): Result<Unit> {
+    private suspend fun runPair(
+        pairingCode: String,
+        manualHost: String?,
+        manualPairPort: Int?,
+        manualConnectPort: Int?,
+    ): Result<Unit> {
         try {
-            val port = AdbMdns.findPort(app, AdbMdns.SERVICE_TYPE_PAIRING, PAIR_DISCOVER_MS)
-                ?: error("Could not find ADB pairing endpoint. Enable Wireless Debugging and tap \"Pair device with pairing code\".")
+            val host = manualHost?.takeIf { it.isNotBlank() } ?: HOST
+            val port = manualPairPort
+                ?: AdbMdns.findPort(app, AdbMdns.SERVICE_TYPE_PAIRING, PAIR_DISCOVER_MS)
+                ?: error(
+                    "Could not find ADB pairing endpoint. Either keep \"Pair device with pairing code\" " +
+                        "open while pairing, or type the host and port shown in that dialog.",
+                )
             val pairing = AdbPairing(ensureKey(), pairingCode)
-            pairing.pair(HOST, port)
+            pairing.pair(host, port)
             val now = System.currentTimeMillis()
-            val next = State.Paired(pairedAt = now, lastConnectAt = null, lastError = null)
+            val next = State.Paired(
+                pairedAt = now,
+                lastConnectAt = null,
+                lastError = null,
+                manualHost = manualHost?.takeIf { it.isNotBlank() },
+                manualConnectPort = manualConnectPort,
+            )
             saveAndPublish(next)
             return Result.success(Unit)
         } catch (ce: CancellationException) {
@@ -131,9 +154,14 @@ class AutostartCoordinator(context: Context) {
         try {
             val current = _state.value
             if (current !is State.Paired) error("Device not paired with SIMcountry yet.")
-            val port = AdbMdns.findPort(app, AdbMdns.SERVICE_TYPE_CONNECT, CONNECT_DISCOVER_MS)
-                ?: error("Could not find Wireless ADB connect endpoint. Is Wireless Debugging enabled?")
-            val connection = AdbConnection(HOST, port, ensureKey())
+            val host = current.manualHost ?: HOST
+            val port = current.manualConnectPort
+                ?: AdbMdns.findPort(app, AdbMdns.SERVICE_TYPE_CONNECT, CONNECT_DISCOVER_MS)
+                ?: error(
+                    "Could not find Wireless ADB connect endpoint. Re-pair from the Status tab " +
+                        "and provide the connect port shown on the Wireless Debugging screen.",
+                )
+            val connection = AdbConnection(host, port, ensureKey())
             val command = daemonStartCommand(app.packageName)
             val output = connection.executeShell(command)
             val now = System.currentTimeMillis()
@@ -178,10 +206,12 @@ class AutostartCoordinator(context: Context) {
         val pairedAt: Long = 0L,
         val lastConnectAt: Long? = null,
         val lastError: String? = null,
+        val manualHost: String? = null,
+        val manualConnectPort: Int? = null,
     ) {
         fun toDomain(): State =
             if (!paired) State.Unpaired
-            else State.Paired(pairedAt, lastConnectAt, lastError)
+            else State.Paired(pairedAt, lastConnectAt, lastError, manualHost, manualConnectPort)
     }
 
     private fun State.toSerializable(): SerializableState = when (this) {
@@ -191,6 +221,8 @@ class AutostartCoordinator(context: Context) {
             pairedAt = pairedAt,
             lastConnectAt = lastConnectAt,
             lastError = lastError,
+            manualHost = manualHost,
+            manualConnectPort = manualConnectPort,
         )
     }
 
@@ -200,27 +232,34 @@ class AutostartCoordinator(context: Context) {
             val pairedAt: Long,
             val lastConnectAt: Long? = null,
             val lastError: String? = null,
+            val manualHost: String? = null,
+            val manualConnectPort: Int? = null,
         ) : State
     }
 
     companion object {
         private const val TAG = "AutostartCoordinator"
         private const val STATE_FILE = "autostart.json"
-        private const val HOST = "127.0.0.1"
+        // adbd on recent AOSP / Motorola builds binds its TCP listener on
+        // [::] (IPv6 wildcard) only -- /proc/net/tcp is empty, the socket
+        // shows up in /proc/net/tcp6. IPv6 loopback reaches it; the IPv4
+        // 127.0.0.1 path is refused.
+        private const val HOST = "::1"
         private const val PAIR_DISCOVER_MS = 15_000L
         private const val CONNECT_DISCOVER_MS = 8_000L
 
         fun daemonStartCommand(packageId: String): String {
-            // Resolve the APK path in the outer shell so the failure case
-            // surfaces in the WRTE stream that AdbConnection.executeShell
-            // returns. Only the actual daemon invocation is backgrounded
-            // (with its own stdout/stderr to /dev/null so adbd can close
-            // the shell stream cleanly).
-            val entry = "it.allard.simcountry.daemon.DaemonEntrypoint"
+            // Resolve the install dir from the APK path so the failure
+            // case surfaces in the WRTE stream that AdbConnection.executeShell
+            // returns. The daemon binary daemonises itself (double-fork +
+            // setsid + reopen stdio) when invoked without --foreground,
+            // so the spawning shell can exit cleanly while the daemon
+            // continues in the background.
             return """APK=$(pm path $packageId | sed "s/^package://;1q"); """ +
                 """[ -n "${'$'}APK" ] || { echo "no apk for $packageId" >&2; exit 90; }; """ +
-                """(nohup /system/bin/app_process -Djava.class.path="${'$'}APK" /system/bin """ +
-                """--nice-name=simcountry-daemon $entry $packageId </dev/null >/dev/null 2>&1 &)"""
+                """D=$(dirname "${'$'}APK")/lib/arm64/libsimcountryd.so; """ +
+                """[ -x "${'$'}D" ] || { echo "no daemon binary at ${'$'}D" >&2; exit 91; }; """ +
+                """"${'$'}D""""
         }
     }
 }

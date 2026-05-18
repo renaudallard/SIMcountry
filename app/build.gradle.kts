@@ -206,6 +206,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.bouncycastle.bcprov)
     implementation(libs.bouncycastle.bcpkix)
+    implementation(libs.conscrypt.android)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 

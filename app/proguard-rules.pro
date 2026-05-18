@@ -31,3 +31,9 @@
 
 # AIDL-generated stubs/parcelables must not be shrunk.
 -keep class it.allard.simcountry.ipc.** { *; }
+
+# Conscrypt is used directly by AdbTls / AdbPairing but its provider hooks
+# itself in via reflection and a JNI native library, so R8 cannot trace
+# the runtime entry points. Keep all of it.
+-keep class org.conscrypt.** { *; }
+-dontwarn org.conscrypt.**
