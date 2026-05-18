@@ -55,7 +55,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import it.allard.simcountry.daemon.autorestart.AutostartCoordinator
 import it.allard.simcountry.data.AppContainer
-import it.allard.simcountry.ipc.SimControlClient
+import it.allard.simcountry.ipc.SimControlSocketClient
 import it.allard.simcountry.ui.DaemonBanner
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -64,11 +64,11 @@ import java.util.Locale
 
 @Composable
 fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
-    val client = container.simControlClient
+    val socketClient = container.simControlSocketClient
     val rulesDoc by container.rulesStore.doc.collectAsState()
     val suppressions by container.overrideDetector.suppressedUntil.collectAsState()
     val autostartState by container.autostart.state.collectAsState()
-    val clientState by client.state.collectAsState()
+    val socketClientState by socketClient.state.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var confirmForget by remember { mutableStateOf(false) }
@@ -80,7 +80,7 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
             .padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        DaemonBanner(client)
+        DaemonBanner(socketClient)
 
         Card(modifier = Modifier.padding(horizontal = 8.dp)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -88,7 +88,7 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
                 when (val s = autostartState) {
                     is AutostartCoordinator.State.Unpaired -> {
                         Text("Not paired. Pair once with Wireless ADB and the daemon will come back on every boot.")
-                        if (clientState is SimControlClient.State.Connected) {
+                        if (socketClientState is SimControlSocketClient.State.Connected) {
                             Text(
                                 "A previously started daemon is still attached for this session. It will stop at the next reboot unless you pair again.",
                                 style = MaterialTheme.typography.bodySmall,

@@ -1,27 +1,31 @@
 // Copyright (c) 2026 Renaud Allard <renaud@allard.it>
 // SPDX-License-Identifier: BSD-2-Clause
 
-//! Phase 1 daemon.
+//! Phase 1+2 daemon.
 //!
-//! Listens on the Linux abstract socket `\0simcountry-daemon`, accepts
-//! length-prefixed frames (4-byte big-endian length, then payload), and
-//! replies. The only command implemented is `ping`, which returns `pong`.
-//! Used by the in-binary `--ping` test client to verify end-to-end framing.
+//! Listens on TCP 127.0.0.1:39351, accepts length-prefixed frames (4-byte
+//! big-endian length, then payload), and replies. The only command
+//! implemented is `ping` -> `pong`. Used by the in-binary `--ping` test
+//! client and by the app's `SimControlSocketClient` to drive the daemon
+//! status banner.
 //!
-//! No Binder / telephony work yet; that lands in phase 4+. The wire payload
-//! is still plain text and will be swapped to CBOR/JSON when typed messages
-//! arrive in phase 3.
+//! Abstract Unix sockets were the original choice but Android SELinux
+//! denies untrusted_app -> shell `unix_stream_socket connectto` on Android
+//! 16, so the wire ran over a 127.0.0.1 TCP port instead. apps with the
+//! INTERNET permission (we already require it for the Wireless-ADB
+//! autostart) can reach localhost. Anyone else local can too, so a
+//! shared-secret handshake is required before any privileged command
+//! lands in phase 4+.
 
 use std::ffi::{c_char, c_int, CString};
 use std::io::{self, Read, Write};
-use std::mem;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::net::{TcpListener, TcpStream};
 use std::process;
 use std::thread;
+use std::time::Duration;
 
 const TAG: &str = "SimcountryDaemon";
-const SOCKET_NAME: &str = "simcountry-daemon";
+const BIND_ADDR: &str = "127.0.0.1:39351";
 const MAX_FRAME: usize = 64 * 1024;
 
 const ANDROID_LOG_INFO: c_int = 4;
@@ -54,20 +58,17 @@ fn main() {
 
 fn run_daemon() -> ! {
     install_signal_handlers();
-    let listener = match bind_abstract(SOCKET_NAME) {
+    let listener = match TcpListener::bind(BIND_ADDR) {
         Ok(l) => l,
         Err(e) => {
-            log(ANDROID_LOG_ERROR, &format!("bind \\0{SOCKET_NAME} failed: {e}"));
+            log(ANDROID_LOG_ERROR, &format!("bind {BIND_ADDR} failed: {e}"));
             process::exit(1);
         }
     };
     let uid = unsafe { libc::getuid() };
     log(
         ANDROID_LOG_INFO,
-        &format!(
-            "listening on abstract \\0{SOCKET_NAME} pid={} uid={uid}",
-            process::id(),
-        ),
+        &format!("listening on {BIND_ADDR} pid={} uid={uid}", process::id()),
     );
     for client in listener.incoming() {
         match client {
@@ -80,25 +81,22 @@ fn run_daemon() -> ! {
     process::exit(0);
 }
 
-fn handle_client(mut stream: UnixStream) {
-    let cred = peer_cred(&stream);
-    log(
-        ANDROID_LOG_INFO,
-        &format!(
-            "client connected pid={:?} uid={:?}",
-            cred.map(|c| c.pid),
-            cred.map(|c| c.uid),
-        ),
-    );
+fn handle_client(mut stream: TcpStream) {
+    let peer = stream
+        .peer_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| "?".into());
+    log(ANDROID_LOG_INFO, &format!("client connected: {peer}"));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     loop {
         let frame = match read_frame(&mut stream) {
             Ok(Some(f)) => f,
             Ok(None) => {
-                log(ANDROID_LOG_INFO, "client disconnected");
+                log(ANDROID_LOG_INFO, &format!("client disconnected: {peer}"));
                 return;
             }
             Err(e) => {
-                log(ANDROID_LOG_WARN, &format!("read frame failed: {e}"));
+                log(ANDROID_LOG_WARN, &format!("read frame failed from {peer}: {e}"));
                 return;
             }
         };
@@ -114,14 +112,14 @@ fn handle_client(mut stream: UnixStream) {
             other => format!("error: unknown command `{other}`").into_bytes(),
         };
         if let Err(e) = write_frame(&mut stream, &reply) {
-            log(ANDROID_LOG_WARN, &format!("write failed: {e}"));
+            log(ANDROID_LOG_WARN, &format!("write failed to {peer}: {e}"));
             return;
         }
     }
 }
 
 fn run_ping() -> i32 {
-    let mut s = match connect_abstract(SOCKET_NAME) {
+    let mut s = match TcpStream::connect(BIND_ADDR) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("connect: {e}");
@@ -153,7 +151,7 @@ fn run_ping() -> i32 {
     }
 }
 
-fn read_frame(s: &mut UnixStream) -> io::Result<Option<Vec<u8>>> {
+fn read_frame<R: Read>(s: &mut R) -> io::Result<Option<Vec<u8>>> {
     let mut len_buf = [0u8; 4];
     match s.read_exact(&mut len_buf) {
         Ok(()) => {}
@@ -172,105 +170,13 @@ fn read_frame(s: &mut UnixStream) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(buf))
 }
 
-fn write_frame(s: &mut UnixStream, data: &[u8]) -> io::Result<()> {
+fn write_frame<W: Write>(s: &mut W, data: &[u8]) -> io::Result<()> {
     let len = u32::try_from(data.len()).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidInput, "frame too large for u32")
     })?;
     s.write_all(&len.to_be_bytes())?;
     s.write_all(data)?;
     s.flush()
-}
-
-fn bind_abstract(name: &str) -> io::Result<UnixListener> {
-    let owned = abstract_socket(name, |fd, addr, len| unsafe {
-        if libc::bind(fd, addr, len) < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if libc::listen(fd, 8) < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    })?;
-    Ok(UnixListener::from(owned))
-}
-
-fn connect_abstract(name: &str) -> io::Result<UnixStream> {
-    let owned = abstract_socket(name, |fd, addr, len| unsafe {
-        if libc::connect(fd, addr, len) < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    })?;
-    Ok(UnixStream::from(owned))
-}
-
-fn abstract_socket<F>(name: &str, op: F) -> io::Result<OwnedFd>
-where
-    F: FnOnce(c_int, *const libc::sockaddr, libc::socklen_t) -> io::Result<()>,
-{
-    let mut addr: libc::sockaddr_un = unsafe { mem::zeroed() };
-    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    let bytes = name.as_bytes();
-    if 1 + bytes.len() > addr.sun_path.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "abstract name too long",
-        ));
-    }
-    // Leading null byte = Linux abstract namespace. sun_path entries are
-    // c_char which is i8 on aarch64-linux-android, so cast each byte.
-    addr.sun_path[0] = 0;
-    for (i, &b) in bytes.iter().enumerate() {
-        addr.sun_path[1 + i] = b as c_char;
-    }
-    let addr_len =
-        (mem::size_of::<libc::sa_family_t>() + 1 + bytes.len()) as libc::socklen_t;
-
-    let owned = unsafe {
-        let fd = libc::socket(
-            libc::AF_UNIX,
-            libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
-            0,
-        );
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        OwnedFd::from_raw_fd(fd)
-    };
-    op(
-        owned.as_raw_fd(),
-        &addr as *const _ as *const libc::sockaddr,
-        addr_len,
-    )?;
-    Ok(owned)
-}
-
-#[derive(Clone, Copy)]
-struct PeerCred {
-    pid: i32,
-    uid: u32,
-}
-
-fn peer_cred(s: &UnixStream) -> Option<PeerCred> {
-    let mut cred: libc::ucred = unsafe { mem::zeroed() };
-    let mut len = mem::size_of::<libc::ucred>() as libc::socklen_t;
-    let rc = unsafe {
-        libc::getsockopt(
-            s.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            &mut cred as *mut _ as *mut _,
-            &mut len,
-        )
-    };
-    if rc < 0 {
-        None
-    } else {
-        Some(PeerCred {
-            pid: cred.pid,
-            uid: cred.uid,
-        })
-    }
 }
 
 extern "C" fn on_signal(_sig: c_int) {

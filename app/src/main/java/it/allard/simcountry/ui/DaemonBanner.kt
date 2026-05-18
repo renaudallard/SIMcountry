@@ -63,19 +63,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import it.allard.simcountry.BuildConfig
-import it.allard.simcountry.ipc.SimControlClient
+import it.allard.simcountry.ipc.SimControlSocketClient
 
 private const val DAEMON_CMD =
-    "adb shell sh -c 'APK=\$(pm path %s | sed \"s/^package://;1q\"); " +
-        "exec /system/bin/app_process -Djava.class.path=\"\$APK\" /system/bin " +
-        "--nice-name=simcountry-daemon it.allard.simcountry.daemon.DaemonEntrypoint %s'"
+    "adb shell 'APK=\$(pm path %s | sed \"s/^package://;1q\"); " +
+        "exec \"\$(dirname \"\$APK\")/lib/arm64/libsimcountryd.so\"'"
 
 @Composable
-fun DaemonBanner(client: SimControlClient) {
+fun DaemonBanner(client: SimControlSocketClient) {
     val state by client.state.collectAsState()
     val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
-    val connected = state is SimControlClient.State.Connected
+    val connected = state is SimControlSocketClient.State.Connected
     val cmd = remember { buildCommand() }
 
     Surface(
@@ -98,14 +97,6 @@ fun DaemonBanner(client: SimControlClient) {
                     imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
                     contentDescription = null,
                     tint = Color.White,
-                )
-            }
-            if (connected) {
-                val s = state as SimControlClient.State.Connected
-                Text(
-                    "version: ${s.version} pid: ${s.pid}",
-                    color = Color.White,
-                    style = MaterialTheme.typography.bodySmall,
                 )
             }
             AnimatedVisibility(expanded) {
@@ -147,7 +138,7 @@ fun DaemonBanner(client: SimControlClient) {
 }
 
 private fun buildCommand(): String =
-    DAEMON_CMD.format(BuildConfig.APPLICATION_ID, BuildConfig.APPLICATION_ID)
+    DAEMON_CMD.format(BuildConfig.APPLICATION_ID)
 
 private fun copy(context: Context, text: String) {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
