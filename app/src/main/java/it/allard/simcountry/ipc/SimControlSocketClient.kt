@@ -81,13 +81,20 @@ class SimControlSocketClient(
     }
 
     @Serializable
+    enum class SubAspect {
+        @SerialName("data") DATA,
+        @SerialName("voice") VOICE,
+        @SerialName("sms") SMS,
+    }
+
+    @Serializable
     sealed class Request {
         @Serializable @SerialName("hello") data object Hello : Request()
         @Serializable @SerialName("auth_response") data class AuthResponse(val hmac: String) : Request()
         @Serializable @SerialName("ping") data object Ping : Request()
         @Serializable @SerialName("get_info") data object GetInfo : Request()
-        @Serializable @SerialName("get_default_data_sub_id") data object GetDefaultDataSubId : Request()
-        @Serializable @SerialName("set_default_data_sub_id") data class SetDefaultDataSubId(@SerialName("sub_id") val subId: Int) : Request()
+        @Serializable @SerialName("get_default_sub_id") data class GetDefaultSubId(val aspect: SubAspect) : Request()
+        @Serializable @SerialName("set_default_sub_id") data class SetDefaultSubId(val aspect: SubAspect, @SerialName("sub_id") val subId: Int) : Request()
     }
 
     @Serializable
@@ -97,7 +104,7 @@ class SimControlSocketClient(
         @Serializable @SerialName("auth_fail") data class AuthFail(val message: String) : Response()
         @Serializable @SerialName("pong") data object Pong : Response()
         @Serializable @SerialName("info") data class Info(val version: String, val pid: Int, val uid: Int) : Response()
-        @Serializable @SerialName("default_data_sub_id") data class DefaultDataSubId(@SerialName("sub_id") val subId: Int) : Response()
+        @Serializable @SerialName("default_sub_id") data class DefaultSubId(val aspect: SubAspect, @SerialName("sub_id") val subId: Int) : Response()
         @Serializable @SerialName("ok") data object Ok : Response()
         @Serializable @SerialName("error") data class Error(val message: String) : Response()
     }
@@ -120,16 +127,16 @@ class SimControlSocketClient(
         return pending.reply.await()
     }
 
-    suspend fun getDefaultDataSubId(): Int {
-        return when (val r = execute(Request.GetDefaultDataSubId)) {
-            is Response.DefaultDataSubId -> r.subId
+    suspend fun getDefaultSubId(aspect: SubAspect): Int {
+        return when (val r = execute(Request.GetDefaultSubId(aspect))) {
+            is Response.DefaultSubId -> r.subId
             is Response.Error -> throw IOException(r.message)
             else -> throw IOException("unexpected response: $r")
         }
     }
 
-    suspend fun setDefaultDataSubId(subId: Int) {
-        when (val r = execute(Request.SetDefaultDataSubId(subId))) {
+    suspend fun setDefaultSubId(aspect: SubAspect, subId: Int) {
+        when (val r = execute(Request.SetDefaultSubId(aspect, subId))) {
             is Response.Ok -> Unit
             is Response.Error -> throw IOException(r.message)
             else -> throw IOException("unexpected response: $r")

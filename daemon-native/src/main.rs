@@ -60,6 +60,24 @@ fn log(prio: c_int, msg: &str) {
     println!("{msg}");
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum SubAspect {
+    Data,
+    Voice,
+    Sms,
+}
+
+impl From<SubAspect> for isub::Aspect {
+    fn from(a: SubAspect) -> isub::Aspect {
+        match a {
+            SubAspect::Data => isub::Aspect::Data,
+            SubAspect::Voice => isub::Aspect::Voice,
+            SubAspect::Sms => isub::Aspect::Sms,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Request {
@@ -67,8 +85,8 @@ enum Request {
     AuthResponse { hmac: String },
     Ping,
     GetInfo,
-    GetDefaultDataSubId,
-    SetDefaultDataSubId { sub_id: i32 },
+    GetDefaultSubId { aspect: SubAspect },
+    SetDefaultSubId { aspect: SubAspect, sub_id: i32 },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -83,7 +101,7 @@ enum Response {
         pid: u32,
         uid: u32,
     },
-    DefaultDataSubId { sub_id: i32 },
+    DefaultSubId { aspect: SubAspect, sub_id: i32 },
     Ok,
     Error { message: String },
 }
@@ -92,18 +110,37 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("--ping") => process::exit(run_ping()),
-        Some("--get-data-sub") => process::exit(run_get_data_sub()),
-        Some("--set-data-sub") => match args.get(2).and_then(|s| s.parse::<i32>().ok()) {
-            Some(id) => process::exit(run_set_data_sub(id)),
-            None => {
-                eprintln!("simcountryd: --set-data-sub requires an integer sub id");
-                process::exit(2);
-            }
-        },
+        Some("--get-sub") => {
+            let aspect = match args.get(2).and_then(|s| parse_cli_aspect(s)) {
+                Some(a) => a,
+                None => {
+                    eprintln!("simcountryd: --get-sub requires data|voice|sms");
+                    process::exit(2);
+                }
+            };
+            process::exit(run_get_sub(aspect))
+        }
+        Some("--set-sub") => {
+            let aspect = match args.get(2).and_then(|s| parse_cli_aspect(s)) {
+                Some(a) => a,
+                None => {
+                    eprintln!("simcountryd: --set-sub requires data|voice|sms <id>");
+                    process::exit(2);
+                }
+            };
+            let id = match args.get(3).and_then(|s| s.parse::<i32>().ok()) {
+                Some(i) => i,
+                None => {
+                    eprintln!("simcountryd: --set-sub requires an integer sub id");
+                    process::exit(2);
+                }
+            };
+            process::exit(run_set_sub(aspect, id))
+        }
         Some(unknown) => {
             eprintln!(
                 "simcountryd: unknown arg `{unknown}`; \
-                 usage: simcountryd [--ping|--get-data-sub|--set-data-sub <id>]"
+                 usage: simcountryd [--ping|--get-sub <aspect>|--set-sub <aspect> <id>]"
             );
             process::exit(2);
         }
@@ -111,10 +148,27 @@ fn main() {
     }
 }
 
-fn run_get_data_sub() -> i32 {
-    match isub::get_default_data_sub_id() {
+fn parse_cli_aspect(s: &str) -> Option<isub::Aspect> {
+    match s {
+        "data" => Some(isub::Aspect::Data),
+        "voice" => Some(isub::Aspect::Voice),
+        "sms" => Some(isub::Aspect::Sms),
+        _ => None,
+    }
+}
+
+fn aspect_label(a: isub::Aspect) -> &'static str {
+    match a {
+        isub::Aspect::Data => "data",
+        isub::Aspect::Voice => "voice",
+        isub::Aspect::Sms => "sms",
+    }
+}
+
+fn run_get_sub(aspect: isub::Aspect) -> i32 {
+    match isub::get_default_sub_id(aspect) {
         Ok(id) => {
-            println!("default_data_sub_id={id}");
+            println!("default_{}_sub_id={id}", aspect_label(aspect));
             0
         }
         Err(e) => {
@@ -124,8 +178,8 @@ fn run_get_data_sub() -> i32 {
     }
 }
 
-fn run_set_data_sub(id: i32) -> i32 {
-    match isub::set_default_data_sub_id(id) {
+fn run_set_sub(aspect: isub::Aspect, id: i32) -> i32 {
+    match isub::set_default_sub_id(aspect, id) {
         Ok(()) => {
             println!("set ok");
             0
@@ -256,12 +310,14 @@ fn dispatch(state: &mut SessionState, apk_hash: &[u8; 32], req: Request) -> Resp
             pid: process::id(),
             uid: unsafe { libc::getuid() },
         },
-        (SessionState::Authed, Request::GetDefaultDataSubId) => match isub::get_default_data_sub_id() {
-            Ok(sub_id) => Response::DefaultDataSubId { sub_id },
-            Err(e) => Response::Error { message: e },
-        },
-        (SessionState::Authed, Request::SetDefaultDataSubId { sub_id }) => {
-            match isub::set_default_data_sub_id(sub_id) {
+        (SessionState::Authed, Request::GetDefaultSubId { aspect }) => {
+            match isub::get_default_sub_id(aspect.into()) {
+                Ok(sub_id) => Response::DefaultSubId { aspect, sub_id },
+                Err(e) => Response::Error { message: e },
+            }
+        }
+        (SessionState::Authed, Request::SetDefaultSubId { aspect, sub_id }) => {
+            match isub::set_default_sub_id(aspect.into(), sub_id) {
                 Ok(()) => Response::Ok,
                 Err(e) => Response::Error { message: e },
             }

@@ -129,7 +129,7 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
             }
         }
 
-        DefaultDataSubCard(socketClient, enabled = socketClientState is SimControlSocketClient.State.Connected)
+        DefaultSubIdsCard(socketClient, enabled = socketClientState is SimControlSocketClient.State.Connected)
 
         if (suppressions.isNotEmpty()) {
             Card(modifier = Modifier.padding(horizontal = 8.dp)) {
@@ -175,56 +175,70 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
 }
 
 @Composable
-private fun DefaultDataSubCard(client: SimControlSocketClient, enabled: Boolean) {
+private fun DefaultSubIdsCard(client: SimControlSocketClient, enabled: Boolean) {
+    Card(modifier = Modifier.padding(horizontal = 8.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Default sub-ids (debug)", style = MaterialTheme.typography.titleMedium)
+            DefaultSubIdRow(client, SimControlSocketClient.SubAspect.DATA, "data", enabled)
+            DefaultSubIdRow(client, SimControlSocketClient.SubAspect.VOICE, "voice", enabled)
+            DefaultSubIdRow(client, SimControlSocketClient.SubAspect.SMS, "sms", enabled)
+        }
+    }
+}
+
+@Composable
+private fun DefaultSubIdRow(
+    client: SimControlSocketClient,
+    aspect: SimControlSocketClient.SubAspect,
+    label: String,
+    enabled: Boolean,
+) {
     val scope = rememberCoroutineScope()
     var current by remember { mutableStateOf<Int?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var inputText by remember { mutableStateOf("") }
 
-    Card(modifier = Modifier.padding(horizontal = 8.dp)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Default data sub-id (debug)", style = MaterialTheme.typography.titleMedium)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Current: ${current?.toString() ?: "?"}",
-                    modifier = Modifier.padding(end = 12.dp),
-                )
-                Button(
-                    enabled = enabled,
-                    onClick = {
-                        scope.launch {
-                            error = null
-                            runCatching { client.getDefaultDataSubId() }
-                                .onSuccess { current = it }
-                                .onFailure { error = it.message ?: it::class.simpleName }
-                        }
-                    },
-                ) { Text("Refresh") }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = inputText,
-                    onValueChange = { inputText = it.filter { c -> c.isDigit() } },
-                    label = { Text("sub id") },
-                    singleLine = true,
-                    modifier = Modifier.padding(end = 8.dp),
-                )
-                Button(
-                    enabled = enabled && inputText.toIntOrNull() != null,
-                    onClick = {
-                        val id = inputText.toInt()
-                        scope.launch {
-                            error = null
-                            runCatching { client.setDefaultDataSubId(id) }
-                                .onSuccess { current = id }
-                                .onFailure { error = it.message ?: it::class.simpleName }
-                        }
-                    },
-                ) { Text("Set") }
-            }
-            error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "$label: ${current?.toString() ?: "?"}",
+                modifier = Modifier.padding(end = 12.dp),
+            )
+            Button(
+                enabled = enabled,
+                onClick = {
+                    scope.launch {
+                        error = null
+                        runCatching { client.getDefaultSubId(aspect) }
+                            .onSuccess { current = it }
+                            .onFailure { error = it.message ?: it::class.simpleName }
+                    }
+                },
+            ) { Text("Refresh") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = inputText,
+                onValueChange = { inputText = it.filter { c -> c.isDigit() } },
+                label = { Text("sub id") },
+                singleLine = true,
+                modifier = Modifier.padding(end = 8.dp),
+            )
+            Button(
+                enabled = enabled && inputText.toIntOrNull() != null,
+                onClick = {
+                    val id = inputText.toInt()
+                    scope.launch {
+                        error = null
+                        runCatching { client.setDefaultSubId(aspect, id) }
+                            .onSuccess { current = id }
+                            .onFailure { error = it.message ?: it::class.simpleName }
+                    }
+                },
+            ) { Text("Set") }
+        }
+        error?.let {
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
     }
 }

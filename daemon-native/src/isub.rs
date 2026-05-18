@@ -18,9 +18,19 @@ const DESCRIPTOR: &str = "com.android.internal.telephony.ISub";
 const SERVICE_NAME: &str = "isub";
 
 // AIDL index -> transaction code = 1 + index (IBinder.FIRST_CALL_TRANSACTION).
-// android16-release: getDefaultDataSubId at index 29, setDefaultDataSubId at index 30.
+// android16-release positions:
+//   29 getDefaultDataSubId
+//   30 setDefaultDataSubId
+//   31 getDefaultVoiceSubId
+//   33 setDefaultVoiceSubId      (32 is getDefaultVoiceSubIdAsUser)
+//   34 getDefaultSmsSubId
+//   36 setDefaultSmsSubId        (35 is getDefaultSmsSubIdAsUser)
 const TXN_GET_DEFAULT_DATA_SUB_ID: u32 = 1 + 29;
 const TXN_SET_DEFAULT_DATA_SUB_ID: u32 = 1 + 30;
+const TXN_GET_DEFAULT_VOICE_SUB_ID: u32 = 1 + 31;
+const TXN_SET_DEFAULT_VOICE_SUB_ID: u32 = 1 + 33;
+const TXN_GET_DEFAULT_SMS_SUB_ID: u32 = 1 + 34;
+const TXN_SET_DEFAULT_SMS_SUB_ID: u32 = 1 + 36;
 
 static CLASS: OnceLock<Result<Class, String>> = OnceLock::new();
 
@@ -37,28 +47,52 @@ fn bound_isub() -> Result<binder::Binder, String> {
     Ok(b)
 }
 
-pub fn get_default_data_sub_id() -> Result<i32, String> {
-    let b = bound_isub()?;
-    let in_parcel = binder::prepare_transaction(&b)?;
-    let reply = binder::transact(&b, TXN_GET_DEFAULT_DATA_SUB_ID, in_parcel)?;
-    read_void_or_int_return(&reply)
+#[derive(Clone, Copy)]
+pub enum Aspect {
+    Data,
+    Voice,
+    Sms,
 }
 
-pub fn set_default_data_sub_id(sub_id: i32) -> Result<(), String> {
+impl Aspect {
+    fn get_code(self) -> u32 {
+        match self {
+            Aspect::Data => TXN_GET_DEFAULT_DATA_SUB_ID,
+            Aspect::Voice => TXN_GET_DEFAULT_VOICE_SUB_ID,
+            Aspect::Sms => TXN_GET_DEFAULT_SMS_SUB_ID,
+        }
+    }
+    fn set_code(self) -> u32 {
+        match self {
+            Aspect::Data => TXN_SET_DEFAULT_DATA_SUB_ID,
+            Aspect::Voice => TXN_SET_DEFAULT_VOICE_SUB_ID,
+            Aspect::Sms => TXN_SET_DEFAULT_SMS_SUB_ID,
+        }
+    }
+}
+
+pub fn get_default_sub_id(aspect: Aspect) -> Result<i32, String> {
+    let b = bound_isub()?;
+    let in_parcel = binder::prepare_transaction(&b)?;
+    let reply = binder::transact(&b, aspect.get_code(), in_parcel)?;
+    read_int_return(&reply)
+}
+
+pub fn set_default_sub_id(aspect: Aspect, sub_id: i32) -> Result<(), String> {
     let b = bound_isub()?;
     let mut in_parcel = binder::prepare_transaction(&b)?;
     in_parcel.write_int32(sub_id)?;
-    let reply = binder::transact(&b, TXN_SET_DEFAULT_DATA_SUB_ID, in_parcel)?;
+    let reply = binder::transact(&b, aspect.set_code(), in_parcel)?;
     let exception = reply.read_int32()?;
     if exception != 0 {
-        return Err(format!("isub.setDefaultDataSubId exception {exception}"));
+        return Err(format!("isub.setDefault*SubId aidl exception {exception}"));
     }
     Ok(())
 }
 
 /// AIDL reply parcels begin with an int32 exception code (0 == no exception).
 /// For methods returning `int`, the value follows that header.
-fn read_void_or_int_return(reply: &binder::Parcel) -> Result<i32, String> {
+fn read_int_return(reply: &binder::Parcel) -> Result<i32, String> {
     let exception = reply.read_int32()?;
     if exception != 0 {
         return Err(format!("isub: aidl exception code {exception}"));
