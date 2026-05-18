@@ -17,9 +17,10 @@ use std::mem;
 use std::ptr;
 use std::sync::OnceLock;
 
-type Status = i32;
+pub type Status = i32;
 pub const STATUS_OK: Status = 0;
 pub const FLAG_NONE: u32 = 0;
+pub const FLAG_ONEWAY: u32 = 1;
 
 type GetServiceFn = unsafe extern "C" fn(*const c_char) -> *mut c_void;
 type DefineClassFn = unsafe extern "C" fn(
@@ -38,6 +39,10 @@ type ParcelWriteInt32Fn = unsafe extern "C" fn(*mut c_void, i32) -> Status;
 type ParcelReadInt32Fn = unsafe extern "C" fn(*const c_void, *mut i32) -> Status;
 type ParcelGetDataPositionFn = unsafe extern "C" fn(*const c_void) -> i32;
 type ParcelGetDataSizeFn = unsafe extern "C" fn(*const c_void) -> i32;
+type AIBinderNewFn = unsafe extern "C" fn(*const c_void, *mut c_void) -> *mut c_void;
+type ParcelWriteStrongBinderFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> Status;
+
+pub type OnTransactFn = extern "C" fn(*mut c_void, u32, *const c_void, *mut c_void) -> Status;
 type ParcelWriteStringFn = unsafe extern "C" fn(*mut c_void, *const c_char, i32) -> Status;
 type ParcelReadInt64Fn = unsafe extern "C" fn(*const c_void, *mut i64) -> Status;
 type ParcelReadBoolFn = unsafe extern "C" fn(*const c_void, *mut bool) -> Status;
@@ -72,6 +77,8 @@ struct Syms {
     parcel_read_string_array: ParcelReadStringArrayFn,
     parcel_get_data_position: ParcelGetDataPositionFn,
     parcel_get_data_size: ParcelGetDataSizeFn,
+    new_binder: AIBinderNewFn,
+    parcel_write_strong_binder: ParcelWriteStrongBinderFn,
 }
 
 // SAFETY: Syms holds only function pointers from a dlopen'd shared
@@ -116,6 +123,8 @@ fn load_syms() -> Result<Syms, String> {
             parcel_read_string_array: mem::transmute::<*mut c_void, ParcelReadStringArrayFn>(load("AParcel_readStringArray")?),
             parcel_get_data_position: mem::transmute::<*mut c_void, ParcelGetDataPositionFn>(load("AParcel_getDataPosition")?),
             parcel_get_data_size: mem::transmute::<*mut c_void, ParcelGetDataSizeFn>(load("AParcel_getDataSize")?),
+            new_binder: mem::transmute::<*mut c_void, AIBinderNewFn>(load("AIBinder_new")?),
+            parcel_write_strong_binder: mem::transmute::<*mut c_void, ParcelWriteStrongBinderFn>(load("AParcel_writeStrongBinder")?),
         })
     }
 }
@@ -146,6 +155,12 @@ extern "C" fn unused_on_transact(
 pub struct Binder {
     raw: *mut c_void,
 }
+
+// SAFETY: AIBinder is reference-counted and thread-safe per the NDK
+// contract -- the strong-count operations are atomic and the underlying
+// libbinder C++ object is itself thread-safe.
+unsafe impl Send for Binder {}
+unsafe impl Sync for Binder {}
 
 impl Drop for Binder {
     fn drop(&mut self) {
@@ -189,6 +204,15 @@ impl Parcel {
         let st = unsafe { (s.parcel_write_int32)(self.raw, v) };
         if st != STATUS_OK {
             return Err(format!("AParcel_writeInt32: status {st}"));
+        }
+        Ok(())
+    }
+
+    pub fn write_strong_binder(&mut self, binder: &Binder) -> Result<(), String> {
+        let s = syms()?;
+        let st = unsafe { (s.parcel_write_strong_binder)(self.raw, binder.raw) };
+        if st != STATUS_OK {
+            return Err(format!("AParcel_writeStrongBinder: status {st}"));
         }
         Ok(())
     }
@@ -419,6 +443,13 @@ pub fn get_service(name: &str) -> Result<Binder, String> {
 }
 
 pub fn define_class(descriptor: &str) -> Result<Class, String> {
+    define_class_with_transact(descriptor, unused_on_transact)
+}
+
+pub fn define_class_with_transact(
+    descriptor: &str,
+    on_transact: OnTransactFn,
+) -> Result<Class, String> {
     let s = syms()?;
     let c = CString::new(descriptor).map_err(|e| e.to_string())?;
     let raw = unsafe {
@@ -426,13 +457,24 @@ pub fn define_class(descriptor: &str) -> Result<Class, String> {
             c.as_ptr(),
             unused_on_create,
             unused_on_destroy,
-            unused_on_transact,
+            on_transact,
         )
     };
     if raw.is_null() {
         return Err("AIBinder_Class_define returned null".into());
     }
     Ok(Class { raw })
+}
+
+/// Allocate a local Binder of the given class. Returned binder's strong
+/// refcount starts at 1 -- drop the Binder to release our reference.
+pub fn new_binder(class: &Class) -> Result<Binder, String> {
+    let s = syms()?;
+    let raw = unsafe { (s.new_binder)(class.raw, ptr::null_mut()) };
+    if raw.is_null() {
+        return Err("AIBinder_new returned null".into());
+    }
+    Ok(Binder { raw })
 }
 
 pub fn associate_class(binder: &Binder, class: &Class) -> Result<(), String> {
@@ -454,14 +496,23 @@ pub fn prepare_transaction(binder: &Binder) -> Result<Parcel, String> {
     Ok(Parcel { raw: p })
 }
 
-pub fn transact(binder: &Binder, code: u32, mut in_parcel: Parcel) -> Result<Parcel, String> {
+pub fn transact(binder: &Binder, code: u32, in_parcel: Parcel) -> Result<Parcel, String> {
+    transact_flags(binder, code, in_parcel, FLAG_NONE)
+}
+
+pub fn transact_flags(
+    binder: &Binder,
+    code: u32,
+    mut in_parcel: Parcel,
+    flags: u32,
+) -> Result<Parcel, String> {
     let s = syms()?;
     let mut out: *mut c_void = ptr::null_mut();
     // transact consumes in_parcel. Null out our handle BEFORE the call so
     // Drop is a no-op regardless of outcome.
     let mut in_raw = in_parcel.raw;
     in_parcel.raw = ptr::null_mut();
-    let st = unsafe { (s.transact)(binder.raw, code, &mut in_raw, &mut out, FLAG_NONE) };
+    let st = unsafe { (s.transact)(binder.raw, code, &mut in_raw, &mut out, flags) };
     if st != STATUS_OK {
         if !out.is_null() {
             unsafe { (s.parcel_delete)(out) };

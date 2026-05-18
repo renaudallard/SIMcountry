@@ -23,6 +23,7 @@
 //! deferred to a future /proc-based peer check.
 
 mod binder;
+mod euicc_controller;
 mod iphone_subinfo;
 mod isub;
 
@@ -89,6 +90,7 @@ enum Request {
     GetDefaultSubId { aspect: SubAspect },
     SetDefaultSubId { aspect: SubAspect, sub_id: i32 },
     ListSubs,
+    SwitchToSubscription { sub_id: i32 },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -124,6 +126,13 @@ fn main() {
             process::exit(run_get_sub(aspect))
         }
         Some("--list-subs") => process::exit(run_list_subs()),
+        Some("--switch-esim") => match args.get(2).and_then(|s| s.parse::<i32>().ok()) {
+            Some(id) => process::exit(run_switch_esim(id)),
+            None => {
+                eprintln!("simcountryd: --switch-esim requires an integer sub id");
+                process::exit(2);
+            }
+        },
         Some("--set-sub") => {
             let aspect = match args.get(2).and_then(|s| parse_cli_aspect(s)) {
                 Some(a) => a,
@@ -191,6 +200,19 @@ fn run_list_subs() -> i32 {
             if list.is_empty() {
                 println!("(no subs)");
             }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+fn run_switch_esim(sub_id: i32) -> i32 {
+    match euicc_controller::switch_to_subscription(sub_id) {
+        Ok(()) => {
+            println!("switch dispatched");
             0
         }
         Err(e) => {
@@ -348,6 +370,12 @@ fn dispatch(state: &mut SessionState, apk_hash: &[u8; 32], req: Request) -> Resp
             Ok(items) => Response::SubInfoList { items },
             Err(e) => Response::Error { message: e },
         },
+        (SessionState::Authed, Request::SwitchToSubscription { sub_id }) => {
+            match euicc_controller::switch_to_subscription(sub_id) {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Error { message: e },
+            }
+        }
         _ => Response::Error {
             message: "out of order or unauthorized".into(),
         },
