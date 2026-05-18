@@ -88,6 +88,12 @@ class SimControlSocketClient(
     }
 
     @Serializable
+    data class DaemonSubInfo(
+        @SerialName("sub_id") val subId: Int,
+        val iccid: String,
+    )
+
+    @Serializable
     sealed class Request {
         @Serializable @SerialName("hello") data object Hello : Request()
         @Serializable @SerialName("auth_response") data class AuthResponse(val hmac: String) : Request()
@@ -95,6 +101,7 @@ class SimControlSocketClient(
         @Serializable @SerialName("get_info") data object GetInfo : Request()
         @Serializable @SerialName("get_default_sub_id") data class GetDefaultSubId(val aspect: SubAspect) : Request()
         @Serializable @SerialName("set_default_sub_id") data class SetDefaultSubId(val aspect: SubAspect, @SerialName("sub_id") val subId: Int) : Request()
+        @Serializable @SerialName("list_subs") data object ListSubs : Request()
     }
 
     @Serializable
@@ -105,6 +112,7 @@ class SimControlSocketClient(
         @Serializable @SerialName("pong") data object Pong : Response()
         @Serializable @SerialName("info") data class Info(val version: String, val pid: Int, val uid: Int) : Response()
         @Serializable @SerialName("default_sub_id") data class DefaultSubId(val aspect: SubAspect, @SerialName("sub_id") val subId: Int) : Response()
+        @Serializable @SerialName("sub_info_list") data class SubInfoList(val items: List<DaemonSubInfo>) : Response()
         @Serializable @SerialName("ok") data object Ok : Response()
         @Serializable @SerialName("error") data class Error(val message: String) : Response()
     }
@@ -138,6 +146,14 @@ class SimControlSocketClient(
     suspend fun setDefaultSubId(aspect: SubAspect, subId: Int) {
         when (val r = execute(Request.SetDefaultSubId(aspect, subId))) {
             is Response.Ok -> Unit
+            is Response.Error -> throw IOException(r.message)
+            else -> throw IOException("unexpected response: $r")
+        }
+    }
+
+    suspend fun listSubs(): List<DaemonSubInfo> {
+        return when (val r = execute(Request.ListSubs)) {
+            is Response.SubInfoList -> r.items
             is Response.Error -> throw IOException(r.message)
             else -> throw IOException("unexpected response: $r")
         }

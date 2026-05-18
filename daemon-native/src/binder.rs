@@ -36,6 +36,23 @@ type DecStrongFn = unsafe extern "C" fn(*mut c_void);
 type ParcelDeleteFn = unsafe extern "C" fn(*mut c_void);
 type ParcelWriteInt32Fn = unsafe extern "C" fn(*mut c_void, i32) -> Status;
 type ParcelReadInt32Fn = unsafe extern "C" fn(*const c_void, *mut i32) -> Status;
+type ParcelGetDataPositionFn = unsafe extern "C" fn(*const c_void) -> i32;
+type ParcelGetDataSizeFn = unsafe extern "C" fn(*const c_void) -> i32;
+type ParcelWriteStringFn = unsafe extern "C" fn(*mut c_void, *const c_char, i32) -> Status;
+type ParcelReadInt64Fn = unsafe extern "C" fn(*const c_void, *mut i64) -> Status;
+type ParcelReadBoolFn = unsafe extern "C" fn(*const c_void, *mut bool) -> Status;
+type StringAllocator = unsafe extern "C" fn(*mut c_void, i32, *mut *mut c_char) -> bool;
+type ByteArrayAllocator = unsafe extern "C" fn(*mut c_void, i32, *mut *mut i8) -> bool;
+type StringArrayAllocator = unsafe extern "C" fn(*mut c_void, i32) -> bool;
+type StringArrayElementAllocator = unsafe extern "C" fn(*mut c_void, usize, i32, *mut *mut c_char) -> bool;
+type ParcelReadStringFn = unsafe extern "C" fn(*const c_void, *mut c_void, StringAllocator) -> Status;
+type ParcelReadByteArrayFn = unsafe extern "C" fn(*const c_void, *mut c_void, ByteArrayAllocator) -> Status;
+type ParcelReadStringArrayFn = unsafe extern "C" fn(
+    *const c_void,
+    *mut c_void,
+    StringArrayAllocator,
+    StringArrayElementAllocator,
+) -> Status;
 
 struct Syms {
     get_service: GetServiceFn,
@@ -46,7 +63,15 @@ struct Syms {
     dec_strong: DecStrongFn,
     parcel_delete: ParcelDeleteFn,
     parcel_write_int32: ParcelWriteInt32Fn,
+    parcel_write_string: ParcelWriteStringFn,
     parcel_read_int32: ParcelReadInt32Fn,
+    parcel_read_int64: ParcelReadInt64Fn,
+    parcel_read_bool: ParcelReadBoolFn,
+    parcel_read_string: ParcelReadStringFn,
+    parcel_read_byte_array: ParcelReadByteArrayFn,
+    parcel_read_string_array: ParcelReadStringArrayFn,
+    parcel_get_data_position: ParcelGetDataPositionFn,
+    parcel_get_data_size: ParcelGetDataSizeFn,
 }
 
 // SAFETY: Syms holds only function pointers from a dlopen'd shared
@@ -82,7 +107,15 @@ fn load_syms() -> Result<Syms, String> {
             dec_strong: mem::transmute::<*mut c_void, DecStrongFn>(load("AIBinder_decStrong")?),
             parcel_delete: mem::transmute::<*mut c_void, ParcelDeleteFn>(load("AParcel_delete")?),
             parcel_write_int32: mem::transmute::<*mut c_void, ParcelWriteInt32Fn>(load("AParcel_writeInt32")?),
+            parcel_write_string: mem::transmute::<*mut c_void, ParcelWriteStringFn>(load("AParcel_writeString")?),
             parcel_read_int32: mem::transmute::<*mut c_void, ParcelReadInt32Fn>(load("AParcel_readInt32")?),
+            parcel_read_int64: mem::transmute::<*mut c_void, ParcelReadInt64Fn>(load("AParcel_readInt64")?),
+            parcel_read_bool: mem::transmute::<*mut c_void, ParcelReadBoolFn>(load("AParcel_readBool")?),
+            parcel_read_string: mem::transmute::<*mut c_void, ParcelReadStringFn>(load("AParcel_readString")?),
+            parcel_read_byte_array: mem::transmute::<*mut c_void, ParcelReadByteArrayFn>(load("AParcel_readByteArray")?),
+            parcel_read_string_array: mem::transmute::<*mut c_void, ParcelReadStringArrayFn>(load("AParcel_readStringArray")?),
+            parcel_get_data_position: mem::transmute::<*mut c_void, ParcelGetDataPositionFn>(load("AParcel_getDataPosition")?),
+            parcel_get_data_size: mem::transmute::<*mut c_void, ParcelGetDataSizeFn>(load("AParcel_getDataSize")?),
         })
     }
 }
@@ -160,6 +193,29 @@ impl Parcel {
         Ok(())
     }
 
+    /// Write a Java-style nullable string. Pass `None` to write null.
+    /// Internally NDK encodes the value as UTF-16 on the wire.
+    pub fn write_string(&mut self, v: Option<&str>) -> Result<(), String> {
+        let s = syms()?;
+        let st = match v {
+            None => unsafe { (s.parcel_write_string)(self.raw, ptr::null(), -1) },
+            Some(text) => {
+                let bytes = text.as_bytes();
+                unsafe {
+                    (s.parcel_write_string)(
+                        self.raw,
+                        bytes.as_ptr() as *const c_char,
+                        bytes.len() as i32,
+                    )
+                }
+            }
+        };
+        if st != STATUS_OK {
+            return Err(format!("AParcel_writeString: status {st}"));
+        }
+        Ok(())
+    }
+
     pub fn read_int32(&self) -> Result<i32, String> {
         let s = syms()?;
         let mut out: i32 = 0;
@@ -169,6 +225,187 @@ impl Parcel {
         }
         Ok(out)
     }
+
+    pub fn data_position(&self) -> i32 {
+        match syms() {
+            Ok(s) => unsafe { (s.parcel_get_data_position)(self.raw as *const c_void) },
+            Err(_) => -1,
+        }
+    }
+
+    pub fn data_size(&self) -> i32 {
+        match syms() {
+            Ok(s) => unsafe { (s.parcel_get_data_size)(self.raw as *const c_void) },
+            Err(_) => -1,
+        }
+    }
+
+    pub fn read_int64(&self) -> Result<i64, String> {
+        let s = syms()?;
+        let mut out: i64 = 0;
+        let st = unsafe { (s.parcel_read_int64)(self.raw as *const c_void, &mut out) };
+        if st != STATUS_OK {
+            return Err(format!("AParcel_readInt64: status {st}"));
+        }
+        Ok(out)
+    }
+
+    pub fn read_bool(&self) -> Result<bool, String> {
+        let s = syms()?;
+        let mut out = false;
+        let st = unsafe { (s.parcel_read_bool)(self.raw as *const c_void, &mut out) };
+        if st != STATUS_OK {
+            return Err(format!("AParcel_readBool: status {st}"));
+        }
+        Ok(out)
+    }
+
+    /// Read a Java string (UTF-16 on wire, returned as UTF-8 String).
+    /// Returns None when the parcel value was null.
+    pub fn read_string(&self) -> Result<Option<String>, String> {
+        let s = syms()?;
+        let mut sink: Option<Vec<u8>> = None;
+        let st = unsafe {
+            (s.parcel_read_string)(
+                self.raw as *const c_void,
+                &mut sink as *mut _ as *mut c_void,
+                string_alloc,
+            )
+        };
+        if st != STATUS_OK {
+            return Err(format!("AParcel_readString: status {st}"));
+        }
+        Ok(sink.map(|v| {
+            let end = v.iter().position(|&c| c == 0).unwrap_or(v.len());
+            String::from_utf8_lossy(&v[..end]).into_owned()
+        }))
+    }
+
+    /// Read a Parcel.writeString8 value. Wire format is identical to a
+    /// byte array (int32 length, length UTF-8 bytes, padded to 4), so we
+    /// route through the byte-array reader and interpret the bytes as
+    /// UTF-8. Returns None when the parcel value was null.
+    pub fn read_string8(&self) -> Result<Option<String>, String> {
+        let bytes = self.read_byte_array()?;
+        Ok(bytes.map(|v| String::from_utf8_lossy(&v).into_owned()))
+    }
+
+    pub fn read_byte_array(&self) -> Result<Option<Vec<u8>>, String> {
+        let s = syms()?;
+        let mut sink: Option<Vec<u8>> = None;
+        let st = unsafe {
+            (s.parcel_read_byte_array)(
+                self.raw as *const c_void,
+                &mut sink as *mut _ as *mut c_void,
+                byte_array_alloc,
+            )
+        };
+        if st != STATUS_OK {
+            return Err(format!("AParcel_readByteArray: status {st}"));
+        }
+        Ok(sink)
+    }
+
+    pub fn read_string_array(&self) -> Result<Option<Vec<Option<String>>>, String> {
+        let s = syms()?;
+        let mut sink: Option<Vec<Option<Vec<u8>>>> = None;
+        let st = unsafe {
+            (s.parcel_read_string_array)(
+                self.raw as *const c_void,
+                &mut sink as *mut _ as *mut c_void,
+                string_array_alloc,
+                string_array_elem_alloc,
+            )
+        };
+        if st != STATUS_OK {
+            return Err(format!("AParcel_readStringArray: status {st}"));
+        }
+        Ok(sink.map(|v| {
+            v.into_iter()
+                .map(|opt| {
+                    opt.map(|b| {
+                        let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+                        String::from_utf8_lossy(&b[..end]).into_owned()
+                    })
+                })
+                .collect()
+        }))
+    }
+}
+
+// String / byte-array / string-array allocators used by AParcel_read*.
+// They run synchronously inside the read call; the buffer pointer they
+// publish via *buffer must remain valid until the read returns. We back
+// each one with a Vec stored in user-supplied state and hand the read
+// function a pointer to the Vec's heap allocation.
+
+extern "C" fn string_alloc(
+    user_data: *mut c_void,
+    length: i32,
+    buffer: *mut *mut c_char,
+) -> bool {
+    let slot = unsafe { &mut *(user_data as *mut Option<Vec<u8>>) };
+    if length < 0 {
+        *slot = None;
+        return true;
+    }
+    let mut vec = vec![0u8; length as usize];
+    if !buffer.is_null() {
+        unsafe { *buffer = vec.as_mut_ptr() as *mut c_char };
+    }
+    *slot = Some(vec);
+    true
+}
+
+extern "C" fn byte_array_alloc(
+    user_data: *mut c_void,
+    length: i32,
+    out: *mut *mut i8,
+) -> bool {
+    let slot = unsafe { &mut *(user_data as *mut Option<Vec<u8>>) };
+    if length < 0 {
+        *slot = None;
+        return true;
+    }
+    let mut vec = vec![0u8; length as usize];
+    if !out.is_null() {
+        unsafe { *out = vec.as_mut_ptr() as *mut i8 };
+    }
+    *slot = Some(vec);
+    true
+}
+
+extern "C" fn string_array_alloc(user_data: *mut c_void, length: i32) -> bool {
+    let slot = unsafe { &mut *(user_data as *mut Option<Vec<Option<Vec<u8>>>>) };
+    if length < 0 {
+        *slot = None;
+        return true;
+    }
+    *slot = Some(vec![None; length as usize]);
+    true
+}
+
+extern "C" fn string_array_elem_alloc(
+    user_data: *mut c_void,
+    index: usize,
+    length: i32,
+    buffer: *mut *mut c_char,
+) -> bool {
+    let slot = unsafe { &mut *(user_data as *mut Option<Vec<Option<Vec<u8>>>>) };
+    let arr = match slot.as_mut() {
+        Some(a) => a,
+        None => return false,
+    };
+    if length < 0 {
+        arr[index] = None;
+        return true;
+    }
+    let mut vec = vec![0u8; length as usize];
+    if !buffer.is_null() {
+        unsafe { *buffer = vec.as_mut_ptr() as *mut c_char };
+    }
+    arr[index] = Some(vec);
+    true
 }
 
 pub fn get_service(name: &str) -> Result<Binder, String> {

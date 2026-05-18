@@ -23,6 +23,7 @@
 //! deferred to a future /proc-based peer check.
 
 mod binder;
+mod iphone_subinfo;
 mod isub;
 
 use std::ffi::{c_char, c_int, CString};
@@ -87,6 +88,7 @@ enum Request {
     GetInfo,
     GetDefaultSubId { aspect: SubAspect },
     SetDefaultSubId { aspect: SubAspect, sub_id: i32 },
+    ListSubs,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -102,6 +104,7 @@ enum Response {
         uid: u32,
     },
     DefaultSubId { aspect: SubAspect, sub_id: i32 },
+    SubInfoList { items: Vec<isub::SubInfo> },
     Ok,
     Error { message: String },
 }
@@ -120,6 +123,7 @@ fn main() {
             };
             process::exit(run_get_sub(aspect))
         }
+        Some("--list-subs") => process::exit(run_list_subs()),
         Some("--set-sub") => {
             let aspect = match args.get(2).and_then(|s| parse_cli_aspect(s)) {
                 Some(a) => a,
@@ -169,6 +173,24 @@ fn run_get_sub(aspect: isub::Aspect) -> i32 {
     match isub::get_default_sub_id(aspect) {
         Ok(id) => {
             println!("default_{}_sub_id={id}", aspect_label(aspect));
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+fn run_list_subs() -> i32 {
+    match isub::list_subs() {
+        Ok(list) => {
+            for s in &list {
+                println!("subId={} iccid={:?}", s.sub_id, s.iccid);
+            }
+            if list.is_empty() {
+                println!("(no subs)");
+            }
             0
         }
         Err(e) => {
@@ -322,6 +344,10 @@ fn dispatch(state: &mut SessionState, apk_hash: &[u8; 32], req: Request) -> Resp
                 Err(e) => Response::Error { message: e },
             }
         }
+        (SessionState::Authed, Request::ListSubs) => match isub::list_subs() {
+            Ok(items) => Response::SubInfoList { items },
+            Err(e) => Response::Error { message: e },
+        },
         _ => Response::Error {
             message: "out of order or unauthorized".into(),
         },

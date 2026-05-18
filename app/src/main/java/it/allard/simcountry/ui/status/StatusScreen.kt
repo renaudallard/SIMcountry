@@ -130,6 +130,7 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
         }
 
         DefaultSubIdsCard(socketClient, enabled = socketClientState is SimControlSocketClient.State.Connected)
+        ListSubsCard(socketClient, enabled = socketClientState is SimControlSocketClient.State.Connected)
 
         if (suppressions.isNotEmpty()) {
             Card(modifier = Modifier.padding(horizontal = 8.dp)) {
@@ -171,6 +172,36 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
                 TextButton(onClick = { confirmForget = false }) { Text("Cancel") }
             },
         )
+    }
+}
+
+@Composable
+private fun ListSubsCard(client: SimControlSocketClient, enabled: Boolean) {
+    val scope = rememberCoroutineScope()
+    var subs by remember { mutableStateOf<List<SimControlSocketClient.DaemonSubInfo>>(emptyList()) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    Card(modifier = Modifier.padding(horizontal = 8.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Active subs (debug)", style = MaterialTheme.typography.titleMedium)
+            Button(
+                enabled = enabled,
+                onClick = {
+                    scope.launch {
+                        error = null
+                        runCatching { client.listSubs() }
+                            .onSuccess { subs = it }
+                            .onFailure { error = it.message ?: it::class.simpleName }
+                    }
+                },
+            ) { Text("Refresh") }
+            subs.forEach { s ->
+                Text("subId=${s.subId} iccid=${s.iccid}", style = MaterialTheme.typography.bodySmall)
+            }
+            error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+        }
     }
 }
 
