@@ -8,6 +8,9 @@ publish = false
 name = "simcountryd"
 path = "src/main.rs"
 
+[dependencies]
+libc = "0.2"
+
 [profile.release]
 strip = true
 opt-level = "s"
