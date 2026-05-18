@@ -119,20 +119,16 @@ Unit tests:
 ## Project layout
 
 ```
-daemon-native/           Rust ELF that runs as shell UID (replaces the
-                         app_process-based Kotlin daemon; rollout in
-                         progress, see CHANGELOG/git history)
-
-app/src/main/aidl/it/allard/simcountry/ipc/
-  ISimControl.aidl       cross-process control surface
-  SubInfo.aidl           parcelable
+daemon-native/           Rust ELF that runs as shell UID. Speaks libbinder_ndk
+                         to ISub / IPhoneSubInfo / IEuiccController, hosts
+                         a JSON-over-TCP control socket on 127.0.0.1:39351.
 
 app/src/main/java/it/allard/simcountry/
-  daemon/                runs as shell UID; calls hidden telephony APIs
   daemon/autorestart/    Wireless-ADB self-restart: ADB protocol, RSA
                          key, TLS+ALPN, mDNS, Ed25519 math, SPAKE2,
                          pairing handshake, autostart coordinator
-  ipc/                   ContentProvider handover, client wrapper
+  ipc/                   SimControlSocketClient: typed JSON client for
+                         the native daemon's control socket
   telephony/             CountryWatcher, SimRegistry, OverrideDetector,
                          KeyguardGate, Mcc (E.212 country dataset)
   rules/                 CountryRule (ISO-keyed), RulesStore (JSON, with
@@ -151,10 +147,9 @@ app/src/main/java/it/allard/simcountry/
 | :--- | :--- | :--- |
 | `READ_PHONE_STATE` | runtime | observe service state and registered network |
 | `POST_NOTIFICATIONS` | runtime | foreground-service notification |
-| `INTERNET` | normal | open loopback TCP sockets to `127.0.0.1` for the Wireless-ADB autostart handshake |
+| `INTERNET` | normal | loopback TCP to the native daemon's control socket, and to adbd's Wireless-ADB endpoint for autostart |
 | `RECEIVE_BOOT_COMPLETED` | normal | restart the watcher after reboot |
 | `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_SPECIAL_USE` | normal | host the country watcher |
-| `QUERY_ALL_PACKAGES` | debug-only | convenience for daemon-target lookup |
 
 The daemon, running as shell UID, uses framework permissions tied to that UID (notably `MODIFY_PHONE_STATE`).
 

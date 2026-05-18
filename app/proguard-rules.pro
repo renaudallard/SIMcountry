@@ -25,13 +25,6 @@
 # ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGES.
 
-# Daemon entrypoint is reflected by app_process; keep its main() entrypoint and the
-# whole package so the dex loaded by app_process resolves names correctly.
--keep class it.allard.simcountry.daemon.** { *; }
-
-# AIDL-generated stubs/parcelables must not be shrunk.
--keep class it.allard.simcountry.ipc.** { *; }
-
 # Conscrypt is used directly by AdbTls / AdbPairing but its provider hooks
 # itself in via reflection and a JNI native library, so R8 cannot trace
 # the runtime entry points. Keep all of it.

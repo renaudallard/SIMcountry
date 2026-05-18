@@ -39,7 +39,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.IBinder
-import android.os.RemoteException
 import android.telephony.ServiceState
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyCallback
@@ -49,8 +48,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import it.allard.simcountry.R
 import it.allard.simcountry.SimcountryApp
-import it.allard.simcountry.ipc.ISimControl
-import it.allard.simcountry.ipc.SimControlClient
+import it.allard.simcountry.ipc.SimControlSocketClient
 import it.allard.simcountry.rules.AspectRules
 import it.allard.simcountry.rules.RuleMatcher
 import it.allard.simcountry.rules.RulesDoc
@@ -267,8 +265,8 @@ class CountryWatcherService : Service() {
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             var wasConnected = false
-            app.container.simControlClient.state.collect { st ->
-                val isConnected = st is SimControlClient.State.Connected
+            app.container.simControlSocketClient.state.collect { st ->
+                val isConnected = st is SimControlSocketClient.State.Connected
                 if (isConnected && !wasConnected) {
                     val current = watcher.currentSettled
                     if (current != null) {
@@ -296,8 +294,8 @@ class CountryWatcherService : Service() {
             Log.i(TAG, "country=$mcc/${settled.country.mnc}: no rule, no defaults")
             return
         }
-        val client = app.container.simControlClient.iface
-        if (client == null) {
+        val client = app.container.simControlSocketClient
+        if (client.state.value !is SimControlSocketClient.State.Connected) {
             Log.w(TAG, "daemon not connected; cannot apply rule for mcc=$mcc")
             return
         }
@@ -306,39 +304,43 @@ class CountryWatcherService : Service() {
         }
     }
 
-    private suspend fun apply(client: ISimControl, mcc: String, aspects: AspectRules, suppressionMs: Long) {
-        val subById = try {
-            client.listAllSubscriptions().associateBy { it.iccid }
-        } catch (e: RemoteException) {
-            Log.e(TAG, "listAllSubscriptions failed", e)
+    private suspend fun apply(
+        client: SimControlSocketClient,
+        mcc: String,
+        aspects: AspectRules,
+        suppressionMs: Long,
+    ) {
+        val subByIccid = try {
+            client.listSubs().associateBy { it.iccid }
+        } catch (t: Throwable) {
+            Log.e(TAG, "listSubs failed", t)
             return
         }
         var newData = -1
         var newVoice = -1
         var newSms = -1
+        suspend fun applyAspect(
+            aspect: SimControlSocketClient.SubAspect,
+            iccid: String,
+        ): Int? {
+            val sub = subByIccid[iccid] ?: run {
+                Log.w(TAG, "$aspect rule references iccid $iccid; not in active subs")
+                return null
+            }
+            return runCatching {
+                client.setDefaultSubId(aspect, sub.subId)
+                sub.subId
+            }.onFailure { Log.e(TAG, "setDefaultSubId($aspect, ${sub.subId})", it) }
+                .getOrNull()
+        }
         aspects.data?.let { ref ->
-            val sub = subById[ref.iccid] ?: return@let
-            if (!sub.isActive) tryActivateEsim(client, ref.iccid)
-            runCatching {
-                client.setDefaultDataSubId(sub.subId)
-                newData = sub.subId
-            }.onFailure { Log.e(TAG, "setDefaultDataSubId(${sub.subId})", it) }
+            applyAspect(SimControlSocketClient.SubAspect.DATA, ref.iccid)?.let { newData = it }
         }
         aspects.voice?.let { ref ->
-            val sub = subById[ref.iccid] ?: return@let
-            if (!sub.isActive) tryActivateEsim(client, ref.iccid)
-            runCatching {
-                client.setDefaultVoiceSubId(sub.subId)
-                newVoice = sub.subId
-            }.onFailure { Log.e(TAG, "setDefaultVoiceSubId(${sub.subId})", it) }
+            applyAspect(SimControlSocketClient.SubAspect.VOICE, ref.iccid)?.let { newVoice = it }
         }
         aspects.sms?.let { ref ->
-            val sub = subById[ref.iccid] ?: return@let
-            if (!sub.isActive) tryActivateEsim(client, ref.iccid)
-            runCatching {
-                client.setDefaultSmsSubId(sub.subId)
-                newSms = sub.subId
-            }.onFailure { Log.e(TAG, "setDefaultSmsSubId(${sub.subId})", it) }
+            applyAspect(SimControlSocketClient.SubAspect.SMS, ref.iccid)?.let { newSms = it }
         }
         app.container.overrideDetector.recordOurSwitch(mcc, newData, newVoice, newSms)
         app.container.simRegistry.refresh()
@@ -346,7 +348,11 @@ class CountryWatcherService : Service() {
         overrideCheckJob = scope.launch {
             delay(15_000)
             val cur = runCatching {
-                Triple(client.defaultDataSubId, client.defaultVoiceSubId, client.defaultSmsSubId)
+                Triple(
+                    client.getDefaultSubId(SimControlSocketClient.SubAspect.DATA),
+                    client.getDefaultSubId(SimControlSocketClient.SubAspect.VOICE),
+                    client.getDefaultSubId(SimControlSocketClient.SubAspect.SMS),
+                )
             }.getOrNull() ?: return@launch
             app.container.overrideDetector.detectAndMaybeSuppress(
                 observedMcc = mcc,
@@ -356,11 +362,6 @@ class CountryWatcherService : Service() {
                 suppressionMs = suppressionMs,
             )
         }
-    }
-
-    private fun tryActivateEsim(client: ISimControl, iccid: String) {
-        runCatching { client.activateEsimByIccid(iccid) }
-            .onFailure { Log.w(TAG, "activateEsimByIccid($iccid) failed", it) }
     }
 
     companion object {

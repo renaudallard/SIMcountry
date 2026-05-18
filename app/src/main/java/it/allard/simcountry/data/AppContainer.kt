@@ -31,7 +31,6 @@ package it.allard.simcountry.data
 
 import android.content.Context
 import it.allard.simcountry.daemon.autorestart.AutostartCoordinator
-import it.allard.simcountry.ipc.SimControlClient
 import it.allard.simcountry.ipc.SimControlSocketClient
 import it.allard.simcountry.rules.RulesStore
 import it.allard.simcountry.telephony.KeyguardGate
@@ -41,9 +40,8 @@ import it.allard.simcountry.telephony.SimRegistry
 class AppContainer(context: Context) {
     private val app = context.applicationContext
     val rulesStore: RulesStore = RulesStore(app)
-    val simControlClient: SimControlClient = SimControlClient()
     val simControlSocketClient: SimControlSocketClient = SimControlSocketClient(app)
-    val simRegistry: SimRegistry = SimRegistry(app, simControlClient)
+    val simRegistry: SimRegistry = SimRegistry(app, simControlSocketClient)
     val overrideDetector: OverrideDetector = OverrideDetector(app)
     val keyguardGate: KeyguardGate = KeyguardGate(app)
     val autostart: AutostartCoordinator = AutostartCoordinator(app)

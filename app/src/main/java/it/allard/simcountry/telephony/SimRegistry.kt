@@ -32,8 +32,7 @@ package it.allard.simcountry.telephony
 import android.content.Context
 import android.telephony.SubscriptionManager
 import android.util.Log
-import it.allard.simcountry.ipc.SimControlClient
-import it.allard.simcountry.ipc.SubInfo
+import it.allard.simcountry.ipc.SimControlSocketClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,10 +48,34 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.io.File
 
+/**
+ * Combines two data sources to render the SIMs visible to the user:
+ *   - The app's own [SubscriptionManager] enumerates active subscriptions
+ *     with public fields (display name, carrier, MCC, MNC, isEmbedded).
+ *     ICCID is gated behind READ_PRIVILEGED_PHONE_STATE so it is empty
+ *     in app land.
+ *   - The native daemon, running as shell uid, fills in the ICCID for
+ *     each active subId via IPhoneSubInfo.
+ *
+ * Rules reference SIMs by ICCID so each successfully enriched sub gets
+ * persisted; if the daemon is unreachable we still keep the app-side
+ * picture, but rules cannot match because no ICCID is available.
+ */
 class SimRegistry(
     context: Context,
-    private val client: SimControlClient,
+    private val socketClient: SimControlSocketClient,
 ) {
+    data class LocalSubInfo(
+        val subId: Int,
+        val iccid: String,
+        val displayName: String,
+        val carrierName: String,
+        val mcc: String?,
+        val mnc: String?,
+        val isEmbedded: Boolean,
+        val isActive: Boolean,
+    )
+
     @Serializable
     private data class Persisted(
         val iccid: String,
@@ -72,21 +95,11 @@ class SimRegistry(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _persisted = MutableStateFlow(load())
-    private val _liveLocal = MutableStateFlow<List<SubInfo>>(emptyList())
-    private val _liveDaemon = MutableStateFlow<List<SubInfo>>(emptyList())
+    private val _live = MutableStateFlow<List<LocalSubInfo>>(emptyList())
 
-    val subs: StateFlow<List<RegisteredSub>> = combine(
-        _persisted,
-        _liveLocal,
-        _liveDaemon,
-    ) { persisted, local, daemon ->
-        // Daemon entries are richer (real ICCID, inactive eSIMs included) so they win
-        // per subscriptionId. The app-side query fills in the active set whenever the
-        // daemon is not connected.
-        val daemonBySubId = daemon.associateBy { it.subId }
-        val merged = (daemon + local.filter { it.subId !in daemonBySubId }).distinctBy { it.subId }
+    val subs: StateFlow<List<RegisteredSub>> = combine(_persisted, _live) { persisted, live ->
         val persistedByIccid = persisted.filter { it.iccid.isNotBlank() }.associateBy { it.iccid }
-        merged.map { s ->
+        live.map { s ->
             val nickname = if (s.iccid.isNotBlank()) persistedByIccid[s.iccid]?.nickname else null
             RegisteredSub(
                 iccid = s.iccid,
@@ -105,23 +118,30 @@ class SimRegistry(
     }
 
     fun refresh() {
-        scope.launch {
-            refreshFromSubscriptionManager()
-            refreshFromDaemon()
-        }
+        scope.launch { doRefresh() }
     }
 
-    private fun refreshFromSubscriptionManager() {
+    private suspend fun doRefresh() {
+        val app = enumerateAppSide()
+        val daemon = enumerateDaemonSide()
+        val merged = app.map { s ->
+            s.copy(iccid = daemon[s.subId].orEmpty())
+        }
+        _live.value = merged
+        persistKnown(merged)
+    }
+
+    private fun enumerateAppSide(): List<LocalSubInfo> {
         val list = try {
             subscriptionManager.activeSubscriptionInfoList ?: emptyList()
         } catch (se: SecurityException) {
             Log.w(TAG, "no READ_PHONE_STATE; skipping app-side enumeration", se)
-            return
+            return emptyList()
         }
-        _liveLocal.value = list.map { si ->
-            SubInfo(
+        return list.map { si ->
+            LocalSubInfo(
                 subId = si.subscriptionId,
-                iccid = si.iccId?.trim().orEmpty(),
+                iccid = "",
                 carrierName = si.carrierName?.toString().orEmpty(),
                 displayName = si.displayName?.toString().orEmpty(),
                 mcc = si.mccString,
@@ -130,21 +150,18 @@ class SimRegistry(
                 isActive = true,
             )
         }
-        persistKnown(_liveLocal.value)
     }
 
-    private suspend fun refreshFromDaemon() {
-        val iface = client.iface ?: return
-        val list = runCatching { iface.listAllSubscriptions() }
-            .onFailure { Log.w(TAG, "listAllSubscriptions", it) }
-            .getOrNull() ?: return
-        _liveDaemon.value = list
-        persistKnown(list)
+    private suspend fun enumerateDaemonSide(): Map<Int, String> {
+        return try {
+            socketClient.listSubs().associate { it.subId to it.iccid }
+        } catch (t: Throwable) {
+            Log.v(TAG, "daemon list_subs failed: ${t.message}")
+            emptyMap()
+        }
     }
 
-    private fun persistKnown(list: List<SubInfo>) {
-        // Only keep entries with a real ICCID in the persisted store; rules reference
-        // SIMs by ICCID and entries without one are not addressable from a rule.
+    private fun persistKnown(list: List<LocalSubInfo>) {
         val identifiable = list.filter { it.iccid.isNotBlank() }
         if (identifiable.isEmpty()) return
         scope.launch {
