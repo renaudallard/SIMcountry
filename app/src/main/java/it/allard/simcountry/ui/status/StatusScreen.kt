@@ -33,6 +33,7 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -41,8 +42,10 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.Alignment
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -126,6 +129,8 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
             }
         }
 
+        DefaultDataSubCard(socketClient, enabled = socketClientState is SimControlSocketClient.State.Connected)
+
         if (suppressions.isNotEmpty()) {
             Card(modifier = Modifier.padding(horizontal = 8.dp)) {
                 Column(Modifier.padding(16.dp)) {
@@ -166,5 +171,60 @@ fun StatusScreen(container: AppContainer, onPair: () -> Unit) {
                 TextButton(onClick = { confirmForget = false }) { Text("Cancel") }
             },
         )
+    }
+}
+
+@Composable
+private fun DefaultDataSubCard(client: SimControlSocketClient, enabled: Boolean) {
+    val scope = rememberCoroutineScope()
+    var current by remember { mutableStateOf<Int?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var inputText by remember { mutableStateOf("") }
+
+    Card(modifier = Modifier.padding(horizontal = 8.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Default data sub-id (debug)", style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Current: ${current?.toString() ?: "?"}",
+                    modifier = Modifier.padding(end = 12.dp),
+                )
+                Button(
+                    enabled = enabled,
+                    onClick = {
+                        scope.launch {
+                            error = null
+                            runCatching { client.getDefaultDataSubId() }
+                                .onSuccess { current = it }
+                                .onFailure { error = it.message ?: it::class.simpleName }
+                        }
+                    },
+                ) { Text("Refresh") }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = inputText,
+                    onValueChange = { inputText = it.filter { c -> c.isDigit() } },
+                    label = { Text("sub id") },
+                    singleLine = true,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
+                Button(
+                    enabled = enabled && inputText.toIntOrNull() != null,
+                    onClick = {
+                        val id = inputText.toInt()
+                        scope.launch {
+                            error = null
+                            runCatching { client.setDefaultDataSubId(id) }
+                                .onSuccess { current = id }
+                                .onFailure { error = it.message ?: it::class.simpleName }
+                        }
+                    },
+                ) { Text("Set") }
+            }
+            error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+        }
     }
 }

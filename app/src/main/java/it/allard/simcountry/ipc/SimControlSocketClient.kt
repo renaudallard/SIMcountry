@@ -32,15 +32,20 @@ package it.allard.simcountry.ipc
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -56,10 +61,12 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * Talks to the Rust daemon over 127.0.0.1:39351 using length-prefixed
- * JSON frames. The session is: Hello -> Challenge{nonce} -> AuthResponse
- * {hmac_sha256(apk_hash, nonce)} -> AuthOk, then GetInfo for the banner,
- * then a periodic Ping keepalive. The apk hash is the SHA-256 of the
- * installed base.apk; daemon recomputes the same from /proc/self/exe.
+ * JSON frames. Authenticates with an apk-hash-derived HMAC handshake,
+ * then runs a single long-lived connection: a Channel feeds caller
+ * requests in; the connection coroutine alternates between draining
+ * the channel and sending keepalive pings. Both keepalive and caller
+ * commands share the same socket; replies are routed back via a
+ * per-request CompletableDeferred.
  */
 class SimControlSocketClient(
     context: Context,
@@ -79,6 +86,8 @@ class SimControlSocketClient(
         @Serializable @SerialName("auth_response") data class AuthResponse(val hmac: String) : Request()
         @Serializable @SerialName("ping") data object Ping : Request()
         @Serializable @SerialName("get_info") data object GetInfo : Request()
+        @Serializable @SerialName("get_default_data_sub_id") data object GetDefaultDataSubId : Request()
+        @Serializable @SerialName("set_default_data_sub_id") data class SetDefaultDataSubId(@SerialName("sub_id") val subId: Int) : Request()
     }
 
     @Serializable
@@ -88,19 +97,47 @@ class SimControlSocketClient(
         @Serializable @SerialName("auth_fail") data class AuthFail(val message: String) : Response()
         @Serializable @SerialName("pong") data object Pong : Response()
         @Serializable @SerialName("info") data class Info(val version: String, val pid: Int, val uid: Int) : Response()
+        @Serializable @SerialName("default_data_sub_id") data class DefaultDataSubId(@SerialName("sub_id") val subId: Int) : Response()
+        @Serializable @SerialName("ok") data object Ok : Response()
         @Serializable @SerialName("error") data class Error(val message: String) : Response()
     }
+
+    private data class Pending(val request: Request, val reply: CompletableDeferred<Response>)
 
     private val apkPath: String = context.applicationInfo.sourceDir
     private val _state = MutableStateFlow<State>(State.Disconnected)
     val state: StateFlow<State> = _state.asStateFlow()
+    private val commands = Channel<Pending>(Channel.UNLIMITED)
 
     init {
         scope.launch { reconnectLoop() }
     }
 
+    /** Execute a request against the daemon. Throws IOException if no connection. */
+    suspend fun execute(req: Request): Response {
+        val pending = Pending(req, CompletableDeferred())
+        commands.send(pending)
+        return pending.reply.await()
+    }
+
+    suspend fun getDefaultDataSubId(): Int {
+        return when (val r = execute(Request.GetDefaultDataSubId)) {
+            is Response.DefaultDataSubId -> r.subId
+            is Response.Error -> throw IOException(r.message)
+            else -> throw IOException("unexpected response: $r")
+        }
+    }
+
+    suspend fun setDefaultDataSubId(subId: Int) {
+        when (val r = execute(Request.SetDefaultDataSubId(subId))) {
+            is Response.Ok -> Unit
+            is Response.Error -> throw IOException(r.message)
+            else -> throw IOException("unexpected response: $r")
+        }
+    }
+
     private suspend fun reconnectLoop() {
-        while (true) {
+        while (currentCoroutineContext().isActive) {
             try {
                 withContext(Dispatchers.IO) { runConnection() }
             } catch (e: CancellationException) {
@@ -113,7 +150,7 @@ class SimControlSocketClient(
         }
     }
 
-    private fun runConnection() {
+    private suspend fun runConnection() {
         val apkHash = sha256(File(apkPath))
         Socket().use { socket ->
             socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
@@ -128,14 +165,30 @@ class SimControlSocketClient(
                 else -> throw IOException("expected info on connect, got $r")
             }
             _state.value = State.Connected(version = info.version, pid = info.pid)
-            Log.i(TAG, "daemon authed and connected v=${info.version} pid=${info.pid} uid=${info.uid}")
+            Log.i(TAG, "daemon authed v=${info.version} pid=${info.pid} uid=${info.uid}")
 
-            while (true) {
-                Thread.sleep(KEEPALIVE_MS)
-                val resp = roundtrip(input, output, Request.Ping)
-                if (resp !is Response.Pong) {
-                    throw IOException("ping got $resp")
+            try {
+                while (currentCoroutineContext().isActive) {
+                    val pending = withTimeoutOrNull(KEEPALIVE_MS) { commands.receive() }
+                    if (pending == null) {
+                        // No caller traffic in the last KEEPALIVE window; send a ping
+                        // so we notice dead connections promptly.
+                        val resp = roundtrip(input, output, Request.Ping)
+                        if (resp !is Response.Pong) {
+                            throw IOException("keepalive got $resp")
+                        }
+                    } else {
+                        try {
+                            val resp = roundtrip(input, output, pending.request)
+                            pending.reply.complete(resp)
+                        } catch (e: Throwable) {
+                            pending.reply.completeExceptionally(e)
+                            throw e
+                        }
+                    }
                 }
+            } finally {
+                _state.value = State.Disconnected
             }
         }
     }
@@ -151,7 +204,7 @@ class SimControlSocketClient(
         }
         val tag = mac.doFinal(nonce)
         when (val r = roundtrip(input, output, Request.AuthResponse(hmac = hexEncode(tag)))) {
-            is Response.AuthOk -> { /* good */ }
+            is Response.AuthOk -> Unit
             is Response.AuthFail -> throw IOException("auth fail: ${r.message}")
             else -> throw IOException("expected auth_ok, got $r")
         }
