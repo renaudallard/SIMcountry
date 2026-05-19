@@ -30,7 +30,9 @@
 package it.allard.simcountry.ui.rules
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -100,14 +102,27 @@ fun RuleEditScreen(
 
         DaemonRequiredBanner(allSims = allSims, pickerReady = sims)
 
-        OutlinedTextField(
-            value = country?.let { "${it.name} (${it.iso})" } ?: "",
-            onValueChange = {},
-            readOnly = true,
-            label = { Text("Country") },
-            placeholder = { Text("Tap to choose") },
-            modifier = Modifier.fillMaxWidth().clickable { pickerOpen = true },
-        )
+        Box(modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = country?.let { "${it.name} (${it.iso})" } ?: "",
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Country") },
+                placeholder = { Text("Tap to choose") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            // A read-only OutlinedTextField captures pointer events internally
+            // and prevents Modifier.clickable from firing, so overlay a
+            // transparent click target to open the picker sheet.
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { pickerOpen = true },
+            )
+        }
 
         if (country != null && country.mccs.size > 1) {
             McNarrowingPicker(country.mccs, mccNarrowing) { mccNarrowing = it }
