@@ -269,7 +269,17 @@ class AutostartCoordinator(context: Context) {
                 // chance to launch. The daemon's comm is "libsimcountryd."
                 // (Linux truncates at 15 chars); the regex below matches it
                 // and nothing else owned by our shell.
+                //
+                // pkill returns as soon as the signal is delivered, not when
+                // the target exits. We poll briefly for the kernel to free
+                // the LISTEN socket; SO_REUSEADDR rescues TIME_WAIT but does
+                // not help a still-LISTENing predecessor, so a second
+                // launch sometimes raced and died silently.
                 """pkill libsimcountryd 2>/dev/null; """ +
+                """for _ in 1 2 3 4 5 6 7 8 9 10; do """ +
+                """  pgrep libsimcountryd >/dev/null 2>&1 || break; """ +
+                """  sleep 0.1; """ +
+                """done; """ +
                 """"${'$'}D""""
         }
     }
