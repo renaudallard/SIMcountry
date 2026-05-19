@@ -43,8 +43,8 @@ android {
         applicationId = "it.allard.simcountry"
         minSdk = 33
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.2.0"
+        versionCode = 10
+        versionName = "0.2.1"
         ndk {
             abiFilters += "arm64-v8a"
         }
