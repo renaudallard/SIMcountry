@@ -85,6 +85,7 @@ class CountryWatcherService : Service() {
     private var subsChangedListener: SubscriptionManager.OnSubscriptionsChangedListener? = null
     private var adbWifiObserver: ContentObserver? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var pendingOfflineNotifJob: Job? = null
     @Volatile
     private var lastAutoReconnectMs: Long = 0L
     private val callbackExecutor = Executors.newSingleThreadExecutor { r ->
@@ -300,6 +301,14 @@ class CountryWatcherService : Service() {
                         applyRule(app.container.rulesStore.doc.value, CountryWatcher.Settled(current, null))
                     }
                 }
+                if (wasConnected && !isConnected) {
+                    // Daemon just dropped. If Wireless Debugging and Wi-Fi
+                    // are still up, try to revive it immediately instead
+                    // of waiting for the observer to see a state change
+                    // that will never come. maybeAutoReconnect has its
+                    // own debounce + paired guard.
+                    maybeAutoReconnect("daemon dropped")
+                }
                 updateDaemonStatusNotification(isConnected)
                 wasConnected = isConnected
             }
@@ -313,10 +322,16 @@ class CountryWatcherService : Service() {
      * foreground-service notification stays low-priority for the watcher
      * itself; this is a separate channel with default importance so it
      * shows up in the status bar.
+     *
+     * The publish is deferred by [OFFLINE_NOTIFICATION_GRACE_MS] so that
+     * a fast auto-reconnect does not flash a notification at the user.
+     * If the daemon comes back during the grace window, we cancel.
      */
     private fun updateDaemonStatusNotification(connected: Boolean) {
         val nm = getSystemService(NotificationManager::class.java) ?: return
         if (connected) {
+            pendingOfflineNotifJob?.cancel()
+            pendingOfflineNotifJob = null
             nm.cancel(DAEMON_STATUS_NOTIF_ID)
             return
         }
@@ -324,9 +339,24 @@ class CountryWatcherService : Service() {
         if (!paired) {
             // Pre-pair we already have a big red banner inside the app;
             // a system notification would be noise.
+            pendingOfflineNotifJob?.cancel()
+            pendingOfflineNotifJob = null
             nm.cancel(DAEMON_STATUS_NOTIF_ID)
             return
         }
+        // Defer; if maybeAutoReconnect (or anything else) brings the
+        // daemon back during the grace window the connected branch
+        // above cancels this job.
+        pendingOfflineNotifJob?.cancel()
+        pendingOfflineNotifJob = scope.launch {
+            delay(OFFLINE_NOTIFICATION_GRACE_MS)
+            val stillDown =
+                app.container.simControlSocketClient.state.value !is SimControlSocketClient.State.Connected
+            if (stillDown) postOfflineNotification(nm)
+        }
+    }
+
+    private fun postOfflineNotification(nm: NotificationManager) {
         val devSettingsIntent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val devSettingsPi = PendingIntent.getActivity(
@@ -508,6 +538,7 @@ class CountryWatcherService : Service() {
         private const val AUTO_RECONNECT_DEBOUNCE_MS = 5_000L
         private const val DAEMON_STATUS_CHANNEL_ID = "daemon_status"
         private const val DAEMON_STATUS_NOTIF_ID = 2
+        private const val OFFLINE_NOTIFICATION_GRACE_MS = 15_000L
 
         fun start(context: Context) {
             val i = Intent(context, CountryWatcherService::class.java)
