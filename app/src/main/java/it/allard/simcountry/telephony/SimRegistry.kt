@@ -97,6 +97,20 @@ class SimRegistry(
     private val _persisted = MutableStateFlow(load())
     private val _live = MutableStateFlow<List<LocalSubInfo>>(emptyList())
 
+    init {
+        // Refresh whenever the daemon transitions to Connected so the
+        // iccid enrichment fills in as soon as it becomes available. The
+        // first emission is the initial Disconnected -- collect drops
+        // those.
+        scope.launch {
+            socketClient.state.collect { st ->
+                if (st is SimControlSocketClient.State.Connected) {
+                    doRefresh()
+                }
+            }
+        }
+    }
+
     val subs: StateFlow<List<RegisteredSub>> = combine(_persisted, _live) { persisted, live ->
         val persistedByIccid = persisted.filter { it.iccid.isNotBlank() }.associateBy { it.iccid }
         live.map { s ->

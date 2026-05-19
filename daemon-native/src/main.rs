@@ -248,7 +248,7 @@ fn run_daemon(foreground: bool) -> ! {
             process::exit(1);
         }
     };
-    let listener = match TcpListener::bind(BIND_ADDR) {
+    let listener = match bind_reusable(BIND_ADDR) {
         Ok(l) => l,
         Err(e) => {
             log(ANDROID_LOG_ERROR, &format!("bind {BIND_ADDR} failed: {e}"));
@@ -514,6 +514,59 @@ fn compute_apk_hash() -> io::Result<[u8; 32]> {
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest);
     Ok(out)
+}
+
+/// Bind 127.0.0.1:39351 with SO_REUSEADDR set. After an APK upgrade
+/// the previous daemon is pkilled by the autostart script; its socket
+/// then sits in TIME_WAIT for ~60 seconds. SO_REUSEADDR lets the
+/// freshly-launched daemon bind the same port immediately. The std
+/// TcpListener::bind path does not set this option on Linux.
+fn bind_reusable(addr: &str) -> io::Result<TcpListener> {
+    let parsed: std::net::SocketAddr = addr
+        .parse()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("addr {addr}: {e}")))?;
+    let v4 = match parsed {
+        std::net::SocketAddr::V4(v4) => v4,
+        std::net::SocketAddr::V6(_) => {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "ipv6 not used here"));
+        }
+    };
+    let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+    sa.sin_family = libc::AF_INET as libc::sa_family_t;
+    sa.sin_port = v4.port().to_be();
+    sa.sin_addr.s_addr = u32::from_ne_bytes(v4.ip().octets());
+    let sa_ptr = &sa as *const _ as *const libc::sockaddr;
+    let sa_len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+    unsafe {
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let one: c_int = 1;
+        if libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            &one as *const _ as *const libc::c_void,
+            std::mem::size_of::<c_int>() as libc::socklen_t,
+        ) < 0
+        {
+            let e = io::Error::last_os_error();
+            libc::close(fd);
+            return Err(e);
+        }
+        if libc::bind(fd, sa_ptr, sa_len) < 0 {
+            let e = io::Error::last_os_error();
+            libc::close(fd);
+            return Err(e);
+        }
+        if libc::listen(fd, 8) < 0 {
+            let e = io::Error::last_os_error();
+            libc::close(fd);
+            return Err(e);
+        }
+        Ok(<TcpListener as std::os::fd::FromRawFd>::from_raw_fd(fd))
+    }
 }
 
 /// Detach from the controlling terminal so the daemon survives the

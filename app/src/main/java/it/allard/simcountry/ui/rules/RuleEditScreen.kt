@@ -50,6 +50,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -72,6 +73,7 @@ fun RuleEditScreen(
     val doc by container.rulesStore.doc.collectAsState()
     val allSims by container.simRegistry.subs.collectAsState()
     val sims = allSims.filter { it.hasIccid }
+    LaunchedEffect(Unit) { container.simRegistry.refresh() }
     val existing = index?.let { doc.rules.getOrNull(it) }
 
     var iso by remember { mutableStateOf(existing?.iso ?: "") }

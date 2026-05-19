@@ -37,14 +37,23 @@ import it.allard.simcountry.daemon.autorestart.AutostartCoordinator
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
-            val app = context.applicationContext as? SimcountryApp
-            val paired = app?.container?.autostart?.state?.value is AutostartCoordinator.State.Paired
-            if (paired) {
-                CountryWatcherService.startWithReconnect(context)
-            } else {
-                CountryWatcherService.start(context)
-            }
+        val triggers = setOf(
+            Intent.ACTION_BOOT_COMPLETED,
+            // Delivered to our own app only, after our APK is replaced.
+            // The previously-running daemon was launched from the now-old
+            // install path with the old APK hash, so its auth handshake
+            // rejects our fresh client; running reconnect tears it down
+            // (the autostart command pkills its peers) and starts the
+            // updated binary.
+            Intent.ACTION_MY_PACKAGE_REPLACED,
+        )
+        if (intent.action !in triggers) return
+        val app = context.applicationContext as? SimcountryApp
+        val paired = app?.container?.autostart?.state?.value is AutostartCoordinator.State.Paired
+        if (paired) {
+            CountryWatcherService.startWithReconnect(context)
+        } else {
+            CountryWatcherService.start(context)
         }
     }
 }

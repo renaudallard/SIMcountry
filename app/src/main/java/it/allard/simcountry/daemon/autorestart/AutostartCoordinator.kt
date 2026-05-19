@@ -251,14 +251,25 @@ class AutostartCoordinator(context: Context) {
         fun daemonStartCommand(packageId: String): String {
             // Resolve the install dir from the APK path so the failure
             // case surfaces in the WRTE stream that AdbConnection.executeShell
-            // returns. The daemon binary daemonises itself (double-fork +
-            // setsid + reopen stdio) when invoked without --foreground,
-            // so the spawning shell can exit cleanly while the daemon
-            // continues in the background.
+            // returns. Kill any previously-running daemon first so an APK
+            // update or stale background instance does not hold the
+            // control port and force the new daemon out. The daemon
+            // daemonises itself (double-fork + setsid + reopen stdio)
+            // when invoked without --foreground, so the spawning shell
+            // can exit cleanly while the daemon continues in the
+            // background.
             return """APK=$(pm path $packageId | sed "s/^package://;1q"); """ +
                 """[ -n "${'$'}APK" ] || { echo "no apk for $packageId" >&2; exit 90; }; """ +
                 """D=$(dirname "${'$'}APK")/lib/arm64/libsimcountryd.so; """ +
                 """[ -x "${'$'}D" ] || { echo "no daemon binary at ${'$'}D" >&2; exit 91; }; """ +
+                // pkill matches by comm (process name) here, NOT -f. The
+                // -f form would match the very shell command we are
+                // running (since the command string itself contains
+                // "libsimcountryd") and kill ourselves before "$D" got a
+                // chance to launch. The daemon's comm is "libsimcountryd."
+                // (Linux truncates at 15 chars); the regex below matches it
+                // and nothing else owned by our shell.
+                """pkill libsimcountryd 2>/dev/null; """ +
                 """"${'$'}D""""
         }
     }
