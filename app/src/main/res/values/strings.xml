@@ -33,4 +33,8 @@
     <string name="watcher_notification_channel_desc">Background monitoring of the registered cellular network to apply per-country SIM rules.</string>
     <string name="watcher_notification_title">SIMcountry</string>
     <string name="watcher_notification_text">Watching the cellular network</string>
+    <string name="daemon_status_channel">Daemon status</string>
+    <string name="daemon_status_channel_desc">Notifies you when the SIM-control daemon is offline and needs you to enable Wireless Debugging plus Wi-Fi.</string>
+    <string name="daemon_status_offline_title">SIMcountry daemon offline</string>
+    <string name="daemon_status_offline_text">Enable Wireless Debugging and join Wi-Fi to restart it. Country rules will not apply until then.</string>
 </resources>

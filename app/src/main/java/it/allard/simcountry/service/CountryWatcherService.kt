@@ -38,7 +38,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.database.ContentObserver
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Handler
+import android.app.PendingIntent
 import android.os.IBinder
+import android.os.Looper
+import android.provider.Settings
 import android.telephony.ServiceState
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyCallback
@@ -48,6 +57,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import it.allard.simcountry.R
 import it.allard.simcountry.SimcountryApp
+import it.allard.simcountry.daemon.autorestart.AutostartCoordinator
 import it.allard.simcountry.ipc.SimControlSocketClient
 import it.allard.simcountry.rules.AspectRules
 import it.allard.simcountry.rules.RuleMatcher
@@ -73,6 +83,10 @@ class CountryWatcherService : Service() {
     private var overrideCheckJob: Job? = null
     private var reconnectJob: Job? = null
     private var subsChangedListener: SubscriptionManager.OnSubscriptionsChangedListener? = null
+    private var adbWifiObserver: ContentObserver? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile
+    private var lastAutoReconnectMs: Long = 0L
     private val callbackExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "simcountry-telephony").apply { isDaemon = true }
     }
@@ -96,6 +110,7 @@ class CountryWatcherService : Service() {
         startSubscriptionsChangedListener()
         startTickLoop()
         startDaemonReconnectLoop()
+        startAutoReconnectWatchers()
         if (intent?.action == ACTION_RECONNECT_DAEMON) {
             scope.launch { app.container.autostart.reconnectDaemon() }
         }
@@ -106,6 +121,7 @@ class CountryWatcherService : Service() {
         super.onDestroy()
         stopSubscriptionsChangedListener()
         unregisterAllCallbacks()
+        stopAutoReconnectWatchers()
         callbackExecutor.shutdown()
         app.container.keyguardGate.stop()
         scope.cancel()
@@ -130,8 +146,7 @@ class CountryWatcherService : Service() {
 
     private fun ensureNotificationChannel() {
         val nm = getSystemService(NotificationManager::class.java)
-        val existing = nm.getNotificationChannel(CHANNEL_ID)
-        if (existing == null) {
+        if (nm.getNotificationChannel(CHANNEL_ID) == null) {
             val ch = NotificationChannel(
                 CHANNEL_ID,
                 getString(R.string.watcher_notification_channel),
@@ -139,6 +154,17 @@ class CountryWatcherService : Service() {
             ).apply {
                 description = getString(R.string.watcher_notification_channel_desc)
                 setShowBadge(false)
+            }
+            nm.createNotificationChannel(ch)
+        }
+        if (nm.getNotificationChannel(DAEMON_STATUS_CHANNEL_ID) == null) {
+            val ch = NotificationChannel(
+                DAEMON_STATUS_CHANNEL_ID,
+                getString(R.string.daemon_status_channel),
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = getString(R.string.daemon_status_channel_desc)
+                setShowBadge(true)
             }
             nm.createNotificationChannel(ch)
         }
@@ -274,8 +300,55 @@ class CountryWatcherService : Service() {
                         applyRule(app.container.rulesStore.doc.value, CountryWatcher.Settled(current, null))
                     }
                 }
+                updateDaemonStatusNotification(isConnected)
                 wasConnected = isConnected
             }
+        }
+    }
+
+    /**
+     * Surface a user-visible notification whenever the daemon is offline
+     * so the user knows they need to re-enable Wireless Debugging + Wi-Fi
+     * (or whatever cleared the daemon) to bring country rules back. The
+     * foreground-service notification stays low-priority for the watcher
+     * itself; this is a separate channel with default importance so it
+     * shows up in the status bar.
+     */
+    private fun updateDaemonStatusNotification(connected: Boolean) {
+        val nm = getSystemService(NotificationManager::class.java) ?: return
+        if (connected) {
+            nm.cancel(DAEMON_STATUS_NOTIF_ID)
+            return
+        }
+        val paired = app.container.autostart.state.value is AutostartCoordinator.State.Paired
+        if (!paired) {
+            // Pre-pair we already have a big red banner inside the app;
+            // a system notification would be noise.
+            nm.cancel(DAEMON_STATUS_NOTIF_ID)
+            return
+        }
+        val devSettingsIntent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val devSettingsPi = PendingIntent.getActivity(
+            this,
+            0,
+            devSettingsIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val n = NotificationCompat.Builder(this, DAEMON_STATUS_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_watcher)
+            .setContentTitle(getString(R.string.daemon_status_offline_title))
+            .setContentText(getString(R.string.daemon_status_offline_text))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(getString(R.string.daemon_status_offline_text)))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(devSettingsPi)
+            .setAutoCancel(true)
+            .setOngoing(false)
+            .build()
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            nm.notify(DAEMON_STATUS_NOTIF_ID, n)
         }
     }
 
@@ -364,11 +437,77 @@ class CountryWatcherService : Service() {
         }
     }
 
+    /**
+     * Auto-recovery: a paired device often comes back from a reboot
+     * with Wireless Debugging toggled off (Motorola Lhotse / Android 16
+     * does this) or with Wi-Fi not yet attached. Either condition
+     * blocks the BootReceiver-triggered reconnect from reaching adbd.
+     * Once the foreground service is up, watch both signals:
+     *   - Settings.Global.adb_wifi_enabled toggling to 1
+     *   - any Wi-Fi network becoming available
+     * and fire reconnectDaemon when either flips, debounced so a flurry
+     * of callbacks does not stampede AdbConnection.
+     */
+    private fun startAutoReconnectWatchers() {
+        val handler = Handler(Looper.getMainLooper())
+        val resolver = contentResolver
+        val adbUri = Settings.Global.getUriFor(SETTING_ADB_WIFI_ENABLED)
+        val observer = object : ContentObserver(handler) {
+            override fun onChange(selfChange: Boolean) {
+                val enabled = runCatching {
+                    Settings.Global.getInt(resolver, SETTING_ADB_WIFI_ENABLED, 0)
+                }.getOrDefault(0) == 1
+                if (enabled) maybeAutoReconnect("$SETTING_ADB_WIFI_ENABLED -> 1")
+            }
+        }
+        runCatching { resolver.registerContentObserver(adbUri, false, observer) }
+            .onSuccess { adbWifiObserver = observer }
+            .onFailure { Log.w(TAG, "observer register failed", it) }
+
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val req = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .build()
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                maybeAutoReconnect("wifi available")
+            }
+        }
+        runCatching { cm.registerNetworkCallback(req, cb) }
+            .onSuccess { networkCallback = cb }
+            .onFailure { Log.w(TAG, "network callback register failed", it) }
+    }
+
+    private fun stopAutoReconnectWatchers() {
+        adbWifiObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
+        adbWifiObserver = null
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        networkCallback?.let { cb -> cm?.let { runCatching { it.unregisterNetworkCallback(cb) } } }
+        networkCallback = null
+    }
+
+    private fun maybeAutoReconnect(reason: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastAutoReconnectMs < AUTO_RECONNECT_DEBOUNCE_MS) return
+        val paired = app.container.autostart.state.value is AutostartCoordinator.State.Paired
+        if (!paired) return
+        val alreadyConnected =
+            app.container.simControlSocketClient.state.value is SimControlSocketClient.State.Connected
+        if (alreadyConnected) return
+        lastAutoReconnectMs = now
+        Log.i(TAG, "auto-reconnect triggered: $reason")
+        scope.launch { app.container.autostart.reconnectDaemon() }
+    }
+
     companion object {
         private const val TAG = "CountryWatcherService"
         private const val CHANNEL_ID = "watcher"
         private const val NOTIF_ID = 1
         const val ACTION_RECONNECT_DAEMON = "it.allard.simcountry.action.RECONNECT_DAEMON"
+        private const val SETTING_ADB_WIFI_ENABLED = "adb_wifi_enabled"
+        private const val AUTO_RECONNECT_DEBOUNCE_MS = 5_000L
+        private const val DAEMON_STATUS_CHANNEL_ID = "daemon_status"
+        private const val DAEMON_STATUS_NOTIF_ID = 2
 
         fun start(context: Context) {
             val i = Intent(context, CountryWatcherService::class.java)
