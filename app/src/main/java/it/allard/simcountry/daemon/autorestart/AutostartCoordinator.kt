@@ -30,7 +30,10 @@
 package it.allard.simcountry.daemon.autorestart
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
+import java.net.Inet4Address
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -71,6 +74,28 @@ class AutostartCoordinator(context: Context) {
 
     private fun ensureKey(): AdbRsaKey =
         key ?: AdbRsaKey.loadOrCreate(app).also { key = it }
+
+    /**
+     * Return the device's current Wi-Fi IPv4 address as a string suitable
+     * for `Socket.connect`, or null if there is no active Wi-Fi or the
+     * link has no IPv4. adbd's connect listener on Motorola Lhotse /
+     * Android 16 binds to that exact address (not loopback), so the
+     * autostart must dial it directly. DHCP can hand a different IP on
+     * each network, so we resolve at reconnect time instead of pinning
+     * it at pair time.
+     */
+    private fun currentWifiHost(): String? {
+        val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return null
+        val network = cm.activeNetwork ?: return null
+        val caps = cm.getNetworkCapabilities(network) ?: return null
+        if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return null
+        val link = cm.getLinkProperties(network) ?: return null
+        return link.linkAddresses.firstOrNull {
+            it.address is Inet4Address && !it.address.isLoopbackAddress &&
+                !it.address.isAnyLocalAddress
+        }?.address?.hostAddress
+    }
 
     suspend fun pair(
         pairingCode: String,
@@ -154,7 +179,13 @@ class AutostartCoordinator(context: Context) {
         try {
             val current = _state.value
             if (current !is State.Paired) error("Device not paired with SIMcountry yet.")
-            val host = current.manualHost ?: HOST
+            // Prefer the live Wi-Fi IP over any stored manualHost: adbd
+            // binds the connect listener to the Wi-Fi interface only on
+            // this device family, and the IPv4 there changes with each
+            // network. Stored manualHost is the user-supplied fallback
+            // for the rare case Wi-Fi isn't current. `HOST` is the
+            // last-resort loopback.
+            val host = currentWifiHost() ?: current.manualHost ?: HOST
             val port = current.manualConnectPort
                 ?: AdbMdns.findPort(app, AdbMdns.SERVICE_TYPE_CONNECT, CONNECT_DISCOVER_MS)
                 ?: error(
