@@ -86,8 +86,7 @@ class CountryWatcherService : Service() {
     private var adbWifiObserver: ContentObserver? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var pendingOfflineNotifJob: Job? = null
-    @Volatile
-    private var lastAutoReconnectMs: Long = 0L
+    private var retryJob: Job? = null
     private val callbackExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "simcountry-telephony").apply { isDaemon = true }
     }
@@ -112,6 +111,13 @@ class CountryWatcherService : Service() {
         startTickLoop()
         startDaemonReconnectLoop()
         startAutoReconnectWatchers()
+        // If the daemon was already dead before the StateFlow collector
+        // attached, no Connected -> Disconnected transition fires the
+        // recovery from startDaemonReconnectLoop on its own. Kick it
+        // here.
+        if (app.container.simControlSocketClient.state.value !is SimControlSocketClient.State.Connected) {
+            launchDaemonRecovery("service start")
+        }
         if (intent?.action == ACTION_RECONNECT_DAEMON) {
             scope.launch { app.container.autostart.reconnectDaemon() }
         }
@@ -123,6 +129,8 @@ class CountryWatcherService : Service() {
         stopSubscriptionsChangedListener()
         unregisterAllCallbacks()
         stopAutoReconnectWatchers()
+        retryJob?.cancel()
+        retryJob = null
         callbackExecutor.shutdown()
         app.container.keyguardGate.stop()
         scope.cancel()
@@ -294,20 +302,22 @@ class CountryWatcherService : Service() {
             var wasConnected = false
             app.container.simControlSocketClient.state.collect { st ->
                 val isConnected = st is SimControlSocketClient.State.Connected
-                if (isConnected && !wasConnected) {
-                    val current = watcher.currentSettled
-                    if (current != null) {
-                        Log.i(TAG, "daemon reconnected; re-applying mcc=${current.mcc}")
-                        applyRule(app.container.rulesStore.doc.value, CountryWatcher.Settled(current, null))
+                if (isConnected) {
+                    if (!wasConnected) {
+                        val current = watcher.currentSettled
+                        if (current != null) {
+                            Log.i(TAG, "daemon reconnected; re-applying mcc=${current.mcc}")
+                            applyRule(app.container.rulesStore.doc.value, CountryWatcher.Settled(current, null))
+                        }
                     }
-                }
-                if (wasConnected && !isConnected) {
-                    // Daemon just dropped. If Wireless Debugging and Wi-Fi
-                    // are still up, try to revive it immediately instead
-                    // of waiting for the observer to see a state change
-                    // that will never come. maybeAutoReconnect has its
-                    // own debounce + paired guard.
-                    maybeAutoReconnect("daemon dropped")
+                    // Daemon is up: stop any retry storm in flight.
+                    retryJob?.cancel()
+                    retryJob = null
+                } else if (wasConnected) {
+                    // Daemon just dropped. Try aggressive recovery instead
+                    // of waiting for an observer transition that will not
+                    // come if Wireless Debugging is already on.
+                    launchDaemonRecovery("daemon dropped")
                 }
                 updateDaemonStatusNotification(isConnected)
                 wasConnected = isConnected
@@ -487,7 +497,7 @@ class CountryWatcherService : Service() {
                 val enabled = runCatching {
                     Settings.Global.getInt(resolver, SETTING_ADB_WIFI_ENABLED, 0)
                 }.getOrDefault(0) == 1
-                if (enabled) maybeAutoReconnect("$SETTING_ADB_WIFI_ENABLED -> 1")
+                if (enabled) launchDaemonRecovery("$SETTING_ADB_WIFI_ENABLED -> 1")
             }
         }
         runCatching { resolver.registerContentObserver(adbUri, false, observer) }
@@ -500,7 +510,7 @@ class CountryWatcherService : Service() {
             .build()
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                maybeAutoReconnect("wifi available")
+                launchDaemonRecovery("wifi available")
             }
         }
         runCatching { cm.registerNetworkCallback(req, cb) }
@@ -516,18 +526,53 @@ class CountryWatcherService : Service() {
         networkCallback = null
     }
 
-    private fun maybeAutoReconnect(reason: String) {
-        val now = System.currentTimeMillis()
-        if (now - lastAutoReconnectMs < AUTO_RECONNECT_DEBOUNCE_MS) return
+    /**
+     * Drive an aggressive reconnect storm while the daemon is down and
+     * Wireless Debugging is enabled: each `reconnectDaemon` attempt can
+     * lose to a TCP socket release race or a transient mDNS / TLS
+     * stumble, but the eventual launch sticks. Up to [MAX_RETRY_ATTEMPTS]
+     * attempts spaced [RETRY_DELAY_MS] apart. If Wireless Debugging is
+     * off we cannot dial adbd at all, so we skip the retries and just
+     * surface the user-actionable notification.
+     *
+     * The job is cancelled by [startDaemonReconnectLoop] as soon as the
+     * daemon transitions to Connected.
+     */
+    private fun launchDaemonRecovery(reason: String) {
         val paired = app.container.autostart.state.value is AutostartCoordinator.State.Paired
         if (!paired) return
-        val alreadyConnected =
-            app.container.simControlSocketClient.state.value is SimControlSocketClient.State.Connected
-        if (alreadyConnected) return
-        lastAutoReconnectMs = now
-        Log.i(TAG, "auto-reconnect triggered: $reason")
-        scope.launch { app.container.autostart.reconnectDaemon() }
+        if (retryJob?.isActive == true) return
+        Log.i(TAG, "daemon recovery starting: $reason")
+        retryJob = scope.launch {
+            for (attempt in 1..MAX_RETRY_ATTEMPTS) {
+                if (!isActive) return@launch
+                val connected =
+                    app.container.simControlSocketClient.state.value is SimControlSocketClient.State.Connected
+                if (connected) {
+                    Log.i(TAG, "daemon back after $attempt attempt(s)")
+                    return@launch
+                }
+                if (!wirelessDebuggingEnabled()) {
+                    Log.i(TAG, "wireless debugging off; will surface notification, no retries")
+                    break
+                }
+                Log.i(TAG, "auto-reconnect attempt $attempt/$MAX_RETRY_ATTEMPTS")
+                app.container.autostart.reconnectDaemon()
+                delay(RETRY_DELAY_MS)
+            }
+            Log.w(TAG, "daemon recovery gave up; surfacing offline notification")
+            // Force the deferred notification job to fire immediately
+            // instead of waiting for its 15s grace.
+            pendingOfflineNotifJob?.cancel()
+            pendingOfflineNotifJob = null
+            val nm = getSystemService(NotificationManager::class.java)
+            if (nm != null) postOfflineNotification(nm)
+        }
     }
+
+    private fun wirelessDebuggingEnabled(): Boolean = runCatching {
+        Settings.Global.getInt(contentResolver, SETTING_ADB_WIFI_ENABLED, 0) == 1
+    }.getOrDefault(false)
 
     companion object {
         private const val TAG = "CountryWatcherService"
@@ -535,10 +580,11 @@ class CountryWatcherService : Service() {
         private const val NOTIF_ID = 1
         const val ACTION_RECONNECT_DAEMON = "it.allard.simcountry.action.RECONNECT_DAEMON"
         private const val SETTING_ADB_WIFI_ENABLED = "adb_wifi_enabled"
-        private const val AUTO_RECONNECT_DEBOUNCE_MS = 5_000L
         private const val DAEMON_STATUS_CHANNEL_ID = "daemon_status"
         private const val DAEMON_STATUS_NOTIF_ID = 2
         private const val OFFLINE_NOTIFICATION_GRACE_MS = 15_000L
+        private const val MAX_RETRY_ATTEMPTS = 20
+        private const val RETRY_DELAY_MS = 3_000L
 
         fun start(context: Context) {
             val i = Intent(context, CountryWatcherService::class.java)
