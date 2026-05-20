@@ -34,6 +34,8 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
 import java.net.Inet4Address
+import java.net.InetSocketAddress
+import java.net.Socket
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -74,6 +76,23 @@ class AutostartCoordinator(context: Context) {
 
     private fun ensureKey(): AdbRsaKey =
         key ?: AdbRsaKey.loadOrCreate(app).also { key = it }
+
+    /**
+     * Quick TCP-connect probe with a short timeout. Used by [runReconnect]
+     * to pick the live port out of NSD's stale-plus-live candidate set:
+     * a port with no listener returns ECONNREFUSED instantly, the live
+     * port accepts the SYN.
+     */
+    private fun probeTcp(host: String, port: Int): Boolean {
+        return try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress(host, port), PROBE_TIMEOUT_MS)
+                true
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
 
     /**
      * Return the device's current Wi-Fi IPv4 address as a string suitable
@@ -186,12 +205,24 @@ class AutostartCoordinator(context: Context) {
             // for the rare case Wi-Fi isn't current. `HOST` is the
             // last-resort loopback.
             val host = currentWifiHost() ?: current.manualHost ?: HOST
-            val port = current.manualConnectPort
-                ?: AdbMdns.findPort(app, AdbMdns.SERVICE_TYPE_CONNECT, CONNECT_DISCOVER_MS)
+            // adbd's Wireless-Debugging connect port is an ephemeral
+            // allocation made each time WD is enabled; the value from
+            // pair time goes stale every WD toggle. NSD on this device
+            // family also lingers stale advertisements next to the
+            // live one, so picking the first NSD result is unreliable.
+            // Collect every port NSD has heard of, fold in the stored
+            // manualConnectPort if any, and pick whichever actually has
+            // a TCP listener responding right now.
+            val mdnsPorts = AdbMdns.findPorts(app, AdbMdns.SERVICE_TYPE_CONNECT, CONNECT_DISCOVER_MS)
+            val candidates = (mdnsPorts + listOfNotNull(current.manualConnectPort)).distinct()
+            Log.i(TAG, "connect port candidates: mdns=$mdnsPorts stored=${current.manualConnectPort}")
+            val port = candidates.firstOrNull { probeTcp(host, it) }
                 ?: error(
-                    "Could not find Wireless ADB connect endpoint. Re-pair from the Status tab " +
-                        "and provide the connect port shown on the Wireless Debugging screen.",
+                    "Could not find Wireless ADB connect endpoint. Toggle Wireless Debugging " +
+                        "off then on, or re-pair from the Status tab with the current connect " +
+                        "port shown on the Wireless Debugging screen.",
                 )
+            Log.i(TAG, "connect port chosen: $port")
             val connection = AdbConnection(host, port, ensureKey())
             val command = daemonStartCommand(app.packageName)
             val output = connection.executeShell(command)
@@ -277,7 +308,12 @@ class AutostartCoordinator(context: Context) {
         // 127.0.0.1 path is refused.
         private const val HOST = "::1"
         private const val PAIR_DISCOVER_MS = 15_000L
-        private const val CONNECT_DISCOVER_MS = 8_000L
+        // Per-attempt mDNS budget. Each launchDaemonRecovery retry pays
+        // this. 3s is enough for Android's NsdManager to surface an
+        // already-advertised service when it works at all; longer than
+        // that and the retry storm stalls.
+        private const val CONNECT_DISCOVER_MS = 3_000L
+        private const val PROBE_TIMEOUT_MS = 800
 
         fun daemonStartCommand(packageId: String): String {
             // Resolve the install dir from the APK path so the failure

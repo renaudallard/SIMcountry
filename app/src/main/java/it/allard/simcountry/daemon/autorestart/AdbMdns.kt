@@ -33,8 +33,9 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentSkipListSet
 
 /**
  * Discovers ADB's Wireless-Debugging endpoints over mDNS. adbd advertises
@@ -56,21 +57,31 @@ object AdbMdns {
     /**
      * Discover the first matching ADB service on the device's mDNS responder
      * and return its TCP port. Returns null if no service is announced or
-     * resolved within [timeoutMs].
-     *
-     * The host portion of the advertised record is ignored: by construction
-     * the endpoints live on the device, so callers connect to 127.0.0.1.
+     * resolved within [timeoutMs]. Thin wrapper over [findPorts] for
+     * single-result use cases (pair endpoint).
      */
-    suspend fun findPort(context: Context, serviceType: String, timeoutMs: Long): Int? {
+    suspend fun findPort(context: Context, serviceType: String, timeoutMs: Long): Int? =
+        findPorts(context, serviceType, timeoutMs).firstOrNull()
+
+    /**
+     * Collect every port advertised on the device's mDNS responder for
+     * [serviceType] within [timeoutMs]. On builds where the responder
+     * lingers stale advertisements alongside the live one (observed on
+     * Motorola Lhotse / Android 16, where the connect-endpoint port
+     * mutates on every Wireless Debugging toggle but NSD still returns
+     * older instances), the caller can probe each candidate to find
+     * the one that actually listens. Results are deduplicated and
+     * returned in the order NSD resolved them.
+     */
+    suspend fun findPorts(context: Context, serviceType: String, timeoutMs: Long): List<Int> {
         val nsd = context.getSystemService(Context.NSD_SERVICE) as NsdManager
-        val portChannel = Channel<Int>(Channel.CONFLATED)
+        val ports = ConcurrentSkipListSet<Int>()
 
         val discoveryListener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(s: String) {}
             override fun onDiscoveryStopped(s: String) {}
             override fun onStartDiscoveryFailed(s: String, errorCode: Int) {
                 Log.w(TAG, "discovery start failed for $s: $errorCode")
-                portChannel.close()
             }
 
             override fun onStopDiscoveryFailed(s: String, errorCode: Int) {}
@@ -87,7 +98,7 @@ object AdbMdns {
 
                     override fun onServiceResolved(resolved: NsdServiceInfo) {
                         Log.i(TAG, "resolved ${resolved.serviceName} -> ${resolved.host}:${resolved.port}")
-                        portChannel.trySend(resolved.port)
+                        ports.add(resolved.port)
                     }
                 }
                 try {
@@ -104,16 +115,21 @@ object AdbMdns {
             nsd.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
         } catch (t: Throwable) {
             Log.w(TAG, "discoverServices threw", t)
-            return null
+            return emptyList()
         }
 
-        return try {
-            withTimeoutOrNull(timeoutMs) { portChannel.receive() }
+        try {
+            withTimeoutOrNull(timeoutMs) {
+                // Stay in the discovery window for the full budget so
+                // multiple advertisements (stale + live) all surface.
+                delay(timeoutMs)
+            }
         } finally {
             try {
                 nsd.stopServiceDiscovery(discoveryListener)
             } catch (_: Throwable) {
             }
         }
+        return ports.toList()
     }
 }
